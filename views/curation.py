@@ -5,8 +5,9 @@ import pandas as pd
 import streamlit as st
 
 from core import ui
-from core.metrics import (QUADRANT_HINT, category_performance, product_performance, segment_category_mix,
-                          theme_lineup, theme_quadrant, theme_segments, theme_table, theme_weekly)
+from core.metrics import (POTENTIAL_HINT, QUADRANT_HINT, category_performance, product_performance, product_potential,
+                          rising_products, segment_category_mix, theme_lineup, theme_quadrant, theme_segments,
+                          theme_table, theme_weekly)
 
 m = ui.get_mart()
 cur, prev = ui.period_controls()
@@ -155,6 +156,63 @@ with tab_p:
                  column_config={"재구매 고객 비중": pcfg, "큐레이션 경유 비중": pcfg, "공헌이익률": pcfg,
                                 "상품매출": st.column_config.NumberColumn(format="localized")})
     ui.note("재구매 고객 비중 = 이 상품을 기간 안에 2번 이상 다른 주문으로 산 고객 ÷ 구매 고객.")
+
+    # ------------- 성장 잠재력 -------------
+    st.subheader("성장 잠재력")
+    st.caption("지금 매출은 낮지만 관심·구매 의향·전환·성장 지표가 좋은 상품을 찾습니다. "
+               "규칙 기반 탐색 점수이며 미래 매출 예측이 아닙니다.")
+    pp = product_potential(m, *cur, prev=prev)
+    ok = pp[pp["구분"].ne("표본 부족")].copy()
+    if ok.empty:
+        st.info(f"상품 클릭 세션이 {pp.attrs['min_clicks']}개 이상인 상품이 없습니다. 분석 기간을 늘려 주세요.")
+    else:
+        pcolor = alt.Scale(domain=["키울 후보", "주력", "점검 필요", "관망"], range=[ui.C_UP, ui.C_MAIN, ui.C_DOWN, ui.C_PREV])
+        a, b = st.columns([3, 2], gap="large")
+        with a:
+            pts = alt.Chart(ok[ok["상품매출"] > 0]).mark_circle(opacity=0.8, size=70).encode(
+                x=alt.X("상품매출:Q", title="현재 상품매출(원, 로그)", scale=alt.Scale(type="log"), axis=alt.Axis(format="~s")),
+                y=alt.Y("잠재력 점수:Q", title="잠재력 점수 (0~100)", scale=alt.Scale(domain=[0, 100])),
+                color=alt.Color("구분:N", scale=pcolor, legend=alt.Legend(title=None)),
+                tooltip=[alt.Tooltip("product_name:N", title="상품"), alt.Tooltip("category:N", title="카테고리"),
+                         alt.Tooltip("잠재력 점수:Q", format=".0f"), alt.Tooltip("상품매출:Q", format=",.0f"),
+                         alt.Tooltip("클릭세션:Q", format=","), alt.Tooltip("장바구니율:Q", format=".1%"),
+                         alt.Tooltip("클릭당 주문:Q", format=".1%")]
+                + ([alt.Tooltip("매출 증가율:Q", format="+.0%")] if has_prev else []))
+            rx = alt.Chart(pd.DataFrame({"v": [pp.attrs["sales_median"]]})).mark_rule(strokeDash=[4, 4], color="#9CA3AF").encode(x="v:Q")
+            ry = alt.Chart(pd.DataFrame({"v": [pp.attrs["score_median"]]})).mark_rule(strokeDash=[4, 4], color="#9CA3AF").encode(y="v:Q")
+            st.altair_chart((pts + rx + ry).properties(height=360), width="stretch")
+            parts = " · ".join(pp.attrs["parts"])
+            ui.note(f"점수 = {parts} 지표를 상품끼리 비교한 백분위의 평균. 점선은 중앙값. "
+                    f"상품 클릭 세션 {pp.attrs['min_clicks']}개 미만 상품 {int((pp['구분'] == '표본 부족').sum())}개는 제외."
+                    + ("" if has_prev else " 비교 기간이 없어 '성장' 지표는 빠졌습니다."))
+        with b:
+            st.markdown("**키울 후보**")
+            st.caption(POTENTIAL_HINT["키울 후보"])
+            cand_df = ok[ok["구분"].eq("키울 후보")].head(10)
+            cols_ = ["product_name", "category", "잠재력 점수", "상품매출", "장바구니율", "클릭당 주문"] + (["매출 증가율"] if has_prev else [])
+            st.dataframe(cand_df[cols_].rename(columns={"product_name": "상품", "category": "카테고리"}), hide_index=True,
+                         width="stretch",
+                         column_config={"잠재력 점수": st.column_config.NumberColumn(format="%.0f"),
+                                        "상품매출": st.column_config.NumberColumn(format="localized"),
+                                        "장바구니율": pcfg, "클릭당 주문": pcfg, "매출 증가율": pcfg})
+            for _, r in cand_df.head(3).iterrows():
+                cand = {"kind": "product", "title": f"'{r['product_name']}' 상품 키우기", "metric": "상품 클릭 → 장바구니율",
+                        "segment": r["product_name"], "product_id": r["product_id"], "current": r["장바구니율"],
+                        "previous": None, "unit": "rate", "n_current": int(r["클릭세션"]), "n_previous": 0, "p_value": None,
+                        "definition": f"잠재력 점수 {r['잠재력 점수']:.0f}(중앙값 {pp.attrs['score_median']:.0f}), "
+                                      f"상품매출 {ui.won(r['상품매출'])}(중앙값 {ui.won(pp.attrs['sales_median'])}), "
+                                      f"클릭 세션 {int(r['클릭세션']):,}",
+                        "hypothesis_hint": POTENTIAL_HINT["키울 후보"]}
+                ui.save_to_lab_button(cand, "상품·큐레이션", cur, prev, key=f"pot_{r['product_id']}",
+                                      label=f"{r['product_name']} 저장")
+        if has_prev:
+            st.markdown("**요즘 뜨는 상품** (비교 기간 대비 상품매출 증가율, 비교 기간 주문 10건 이상)")
+            rp = rising_products(m, cur, prev, n=10)
+            st.dataframe(rp[["product_name", "category", "매출 증가율", "상품매출", "이전 상품매출", "클릭 증가율"]]
+                         .rename(columns={"product_name": "상품", "category": "카테고리"}), hide_index=True, width="stretch",
+                         column_config={"매출 증가율": pcfg, "클릭 증가율": pcfg,
+                                        "상품매출": st.column_config.NumberColumn(format="localized"),
+                                        "이전 상품매출": st.column_config.NumberColumn(format="localized")})
 
     st.subheader("고객군별 선호 카테고리")
     grp = st.segmented_control("고객 구분", ["첫 구매 / 기존 구매", "주문 당시 등급", "방문 유형"], default="첫 구매 / 기존 구매",

@@ -8,7 +8,7 @@ import streamlit as st
 
 from . import store
 from .data import PERIOD_END, PERIOD_START, backend_name, build_all
-from .metrics import previous_period
+from .metrics import compare_period
 
 # 색상: 현재 기간 / 비교 기간 / 하락 / 상승 / 보조
 C_MAIN = "#1F6F5C"
@@ -118,7 +118,7 @@ def period_controls():
             sb.info("시작일과 종료일을 모두 선택해 주세요.")
             st.stop()
         cur = (pd.Timestamp(rng[0]), pd.Timestamp(rng[1]) + pd.Timedelta(days=1))
-        prev = previous_period(*cur)
+        prev = compare_period(*cur)   # 달 단위로 딱 떨어지면 직전 달, 아니면 직전 같은 일수
     compare = sb.toggle("이전 기간과 비교", value=True, key="period_compare")
     if not compare:
         prev = None

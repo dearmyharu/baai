@@ -27,6 +27,20 @@ def previous_period(start: pd.Timestamp, end: pd.Timestamp):
     return p_start, p_end
 
 
+def compare_period(start: pd.Timestamp, end: pd.Timestamp):
+    """비교 기간 규칙(대시보드·챗봇 공통).
+    - 달 단위로 딱 떨어지는 기간(예: 9/1~9/30)이면 직전 같은 개수의 달(8/1~8/31)
+    - 그 밖에는 직전 같은 일수
+    상세 데이터(4/1) 이전이면 None."""
+    start, end = pd.Timestamp(start), pd.Timestamp(end)
+    if start.day == 1 and end.day == 1 and start.normalize() == start and end.normalize() == end:
+        n = (end.year - start.year) * 12 + end.month - start.month
+        if n >= 1:
+            p_start = start - pd.DateOffset(months=n)
+            return None if p_start < PERIOD_START else (p_start, start)
+    return previous_period(start, end)
+
+
 # ---------------------------------------------------------------------------
 # 통계 도우미
 # ---------------------------------------------------------------------------

@@ -1,0 +1,138 @@
+"""⓪ AI 분석가: 궁금한 것을 물으면 데이터를 찾아 차트로 보여준다.
+
+지금은 LLM 연결 전 단계라, 예시 질문을 누르면 정해진 도구(core/tools.py)를 바로 실행한다.
+LLM이 연결되면 자유 질문 → 도구 선택·기간 해석 → 같은 도구 실행 → 결과 설명 순서로 바뀐다.
+"""
+import os
+
+import altair as alt
+import pandas as pd
+import streamlit as st
+
+from core import tools, ui
+
+m = ui.get_mart()
+
+st.title("AI 분석가")
+st.caption("궁금한 것을 물어보면 데이터를 찾아 숫자와 차트로 보여 드립니다. 데이터 기간: 2026-04-01 ~ 2026-09-30")
+
+
+def llm_key() -> str | None:
+    for k in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY"):
+        try:
+            v = st.secrets.get(k)
+        except Exception:
+            v = None
+        v = v or os.getenv(k)
+        if v:
+            return k
+    return None
+
+
+KEY = llm_key()
+if not KEY:
+    st.info("AI 모델이 아직 연결되지 않았습니다. 지금은 아래 **예시 질문**에 답할 수 있어요. "
+            "연결되면 자유롭게 질문할 수 있습니다.", icon=":material/info:")
+
+if "ask_log" not in st.session_state:
+    st.session_state.ask_log = []
+log = st.session_state.ask_log
+
+
+# ---------------------------------------------------------------------------
+# 결과 그리기
+# ---------------------------------------------------------------------------
+def draw_chart(c: dict):
+    d = c["data"]
+    kind = c["kind"]
+    if kind in ("bar", "funnel") and not c.get("vertical"):
+        sort = list(d[c["y"]]) if kind == "funnel" else "-x"
+        ch = alt.Chart(d).mark_bar(color=ui.C_MAIN, cornerRadiusEnd=3).encode(
+            x=alt.X(f"{c['x']}:Q", title=None, axis=alt.Axis(format=c.get("x_fmt", ",.0f"))),
+            y=alt.Y(f"{c['y']}:N", sort=sort, title=None),
+            tooltip=[c["y"], alt.Tooltip(c["x"], format=c.get("x_fmt", ",.0f"))])
+        h = max(160, 30 * len(d))
+    elif kind == "bar":
+        ch = alt.Chart(d).mark_bar(color=ui.C_MAIN, cornerRadiusEnd=3).encode(
+            x=alt.X(f"{c['x']}:N", sort=list(d[c["x"]]), title=None, axis=alt.Axis(labelAngle=0)),
+            y=alt.Y(f"{c['y']}:Q", title=None, axis=alt.Axis(format=c.get("y_fmt", ",.0f"))),
+            tooltip=[c["x"], alt.Tooltip(c["y"], format=c.get("y_fmt", ",.0f"))])
+        h = 240
+    elif kind == "line":
+        ch = alt.Chart(d).mark_line(point=True, color=ui.C_MAIN).encode(
+            x=alt.X(f"{c['x']}:T", title=None),
+            y=alt.Y(f"{c['y']}:Q", title=None, axis=alt.Axis(format=c.get("y_fmt", ",.0f"))),
+            tooltip=[alt.Tooltip(f"{c['x']}:T"), alt.Tooltip(c["y"], format=",.0f")])
+        h = 280
+    else:  # scatter
+        enc = dict(
+            x=alt.X(f"{c['x']}:Q", title=c["x"], scale=alt.Scale(type="log") if c.get("x_log") else alt.Scale(zero=False),
+                    axis=alt.Axis(format=c.get("x_fmt", ",.0f"))),
+            y=alt.Y(f"{c['y']}:Q", title=c["y"], scale=alt.Scale(zero=False), axis=alt.Axis(format=c.get("y_fmt", ",.0f"))),
+            tooltip=[c.get("label", c["x"]), alt.Tooltip(c["x"], format=c.get("x_fmt", ",.0f")),
+                     alt.Tooltip(c["y"], format=c.get("y_fmt", ",.0f"))])
+        if c.get("color"):
+            enc["color"] = alt.Color(f"{c['color']}:N", legend=alt.Legend(title=None))
+        ch = alt.Chart(d).mark_circle(size=90, opacity=0.85).encode(**enc)
+        h = 320
+    st.altair_chart(ch.properties(height=h), width="stretch")
+
+
+def show_result(res: dict):
+    st.markdown(f"**{res['title']}** · 기준 기간 {res['period']}")
+    for f in res["facts"]:
+        st.markdown(f"- {f}")
+    if res.get("chart") is not None:
+        draw_chart(res["chart"])
+    if res.get("table") is not None:
+        with st.expander("표로 보기"):
+            st.dataframe(res["table"], hide_index=True, width="stretch")
+    for n in res.get("notes", []):
+        ui.note(n)
+
+
+def answer(question: str, tool: str | None = None, params: dict | None = None):
+    entry = {"q": question}
+    if tool is None:
+        entry["text"] = ("AI 모델이 연결되면 이런 자유 질문에도 답할 수 있어요. 지금은 아래 예시 질문 중 비슷한 것을 골라 주세요."
+                         if not KEY else "AI 모델 연결 작업이 아직 끝나지 않았습니다. 예시 질문을 이용해 주세요.")
+    else:
+        try:
+            entry["result"] = tools.run(m, tool, **(params or {}))
+            entry["tool"] = tool
+        except Exception as e:  # 기간이 데이터 밖이거나 계산 불가
+            entry["text"] = f"이 질문은 지금 데이터로 답하기 어렵습니다: {e}"
+    log.append(entry)
+
+
+# ---------------------------------------------------------------------------
+# 대화
+# ---------------------------------------------------------------------------
+for e in log:
+    with st.chat_message("user"):
+        st.markdown(e["q"])
+    with st.chat_message("assistant"):
+        if "result" in e:
+            show_result(e["result"])
+        else:
+            st.markdown(e["text"])
+
+q = st.chat_input("예: 이번 달 매출 제일 많이 나온 상품은?")
+if q:
+    hit = next((ex for ex in tools.EXAMPLES if ex[0].replace(" ", "") == q.replace(" ", "")), None)
+    answer(q, *(hit[1:] if hit else (None, None)))
+    st.rerun()
+
+st.markdown("**예시 질문**")
+cols = st.columns(2)
+for i, (eq, tool, params) in enumerate(tools.EXAMPLES):
+    if cols[i % 2].button(eq, key=f"ex_{i}", use_container_width=True):
+        answer(eq, tool, params)
+        st.rerun()
+
+if log:
+    if st.button("대화 지우기", icon=":material/delete:"):
+        log.clear()
+        st.rerun()
+ui.note("이번 달 = 2026년 9월, 지난달 = 8월로 해석합니다(데이터 마지막 날 기준). "
+        "숫자는 모두 대시보드와 같은 계산 함수로 만듭니다. 원인·대책은 데이터로 확인된 사실이 아니라 가설입니다.")

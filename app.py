@@ -21,8 +21,11 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 pages = {
+    "질문하기": [
+        st.Page("views/ask.py", title="AI 분석가", icon=":material/chat:", default=True),
+    ],
     "분석": [
-        st.Page("views/overview.py", title="통합 현황", icon=":material/dashboard:", default=True),
+        st.Page("views/overview.py", title="통합 현황", icon=":material/dashboard:"),
         st.Page("views/curation.py", title="상품·큐레이션", icon=":material/storefront:"),
         st.Page("views/journey.py", title="고객 여정·전환", icon=":material/conversion_path:"),
         st.Page("views/retention.py", title="고객·리텐션", icon=":material/group:"),

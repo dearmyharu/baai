@@ -67,7 +67,7 @@ def q07(m):
 def q08(m):
     ce = M.coupon_efficiency(m, *THIS_MONTH)
     by = ce["by_coupon"][ce["by_coupon"]["주문수"] >= 30]
-    return {"쿠폰 효율(배)": _r(ce["total"]["efficiency"], 2), "쿠폰 할인액": _r(ce["total"]["discount"]),
+    return {"쿠폰 효율(배)": _r(ce["total"]["efficiency"]), "쿠폰 할인액": _r(ce["total"]["discount"]),
             "쿠폰 주문 매출": _r(ce["total"]["coupon_sales"]),
             "효율 1위 쿠폰(30건 이상)": by["쿠폰"].iloc[0] if len(by) else None,
             "주의": "쿠폰 때문에 생긴 매출이 아니라 쿠폰을 쓴 주문의 매출임을 밝혀야 함"}
