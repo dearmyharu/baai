@@ -5,7 +5,7 @@ import pandas as pd
 import streamlit as st
 
 from core import ui
-from core.metrics import FUNNEL_STEPS, funnel, in_period, step_rate, two_prop_test
+from core.metrics import FUNNEL_STEPS, funnel, funnel_weekly, in_period, step_breakdown, step_rate, two_prop_test
 
 m = ui.get_mart()
 cur, prev = ui.period_controls()
@@ -97,15 +97,7 @@ col = dims[dim]
 if col == "first_category" and step_idx < 2 + (path == "CURATION"):
     st.info("첫 클릭 상품 카테고리는 상품 클릭 이후 구간에서만 정해집니다. 다른 기준이나 구간을 골라주세요.")
 else:
-    gc = step_rate(s_cur, path, step_idx, by=col).rename(columns={"rate": "분석 기간"})
-    if has_prev:
-        gp = step_rate(s_prev, path, step_idx, by=col)
-        gc = gc.join(gp.rename(columns={"num": "num_p", "den": "den_p", "rate": "비교 기간"}), how="left")
-        gc["변화(%p)"] = (gc["분석 기간"] - gc["비교 기간"]) * 100
-        gc["p값"] = [two_prop_test(r.num, r.den, r.num_p, r.den_p)[1] if pd.notna(r.den_p) and r.den_p > 0 else np.nan
-                    for r in gc.itertuples()]
-        # 전체 변화에 대한 기여: 그룹 분모 비중 × 그룹 전환율 변화
-        gc["전체 변화 기여(%p)"] = (gc["den"] / gc["den"].sum()) * gc["변화(%p)"]
+    gc = step_breakdown(s_cur, s_prev, path, step_idx, by=col)
     gc = gc[gc.index != "nan"].reset_index().rename(columns={"grp": dim, "den": "분모 세션", "num": "전환 세션"})
     gc[dim] = gc[dim].map(lambda v: ui.LABELS.get(v, {"True": "신규 가입(4/1 이후)", "False": "기존 가입"}.get(v, v)))
     gc["표본"] = np.where(gc["분모 세션"] < 30, "⚠️ 30 미만", "")
@@ -146,17 +138,7 @@ st.divider()
 
 # ---------------- 기간별 변화 ----------------
 st.subheader("구간 전환율 주별 추이")
-ss = m["sessions"] if path == "ALL" else m["sessions"][m["sessions"]["path"].eq(path)]
-weeks = []
-for wk, g in ss.groupby("week"):
-    row = {"week": wk}
-    for i in range(1, len(order)):
-        if order[i] == "구매 완료":
-            continue
-        n, dd, r = step_rate(g, path, i)
-        row[f"{order[i-1]}→{order[i]}"] = r
-    weeks.append(row)
-wdf = pd.DataFrame(weeks).melt(id_vars="week", var_name="구간", value_name="전환율")
+wdf = funnel_weekly(m, path)
 band = alt.Chart(pd.DataFrame({"s": [cur[0]], "e": [cur[1]]})).mark_rect(color=ui.C_MAIN, opacity=0.07).encode(x="s:T", x2="e:T")
 line = alt.Chart(wdf).mark_line(point=alt.OverlayMarkDef(size=25)).encode(
     x=alt.X("week:T", title=None, axis=alt.Axis(format="%m/%d")),

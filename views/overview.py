@@ -4,7 +4,8 @@ import pandas as pd
 import streamlit as st
 
 from core import ui
-from core.metrics import coupon_efficiency, detect_changes, in_period, kpis, theme_table
+from core.metrics import (category_sales, coupon_efficiency, detect_changes, kpis, new_signups,
+                          revenue_decomposition, sales_trend, theme_table, top_products)
 
 m = ui.get_mart()
 cur, prev = ui.period_controls()
@@ -31,13 +32,11 @@ if has_prev and cur[1] - cur[0] != prev[1] - prev[0]:
             "합계 지표(매출·주문·고객 수)는 일수 차이의 영향을 받습니다.")
 
 # 매출 변화 분해: 주문 수 vs 객단가
-if has_prev and kp["orders"] and k["orders"]:
-    rev_ch = k["revenue"] - kp["revenue"]
-    ord_eff = (k["orders"] - kp["orders"]) * kp["aov"]
-    aov_eff = (k["aov"] - kp["aov"]) * k["orders"]
+dec = revenue_decomposition(m, cur, prev, k, kp) if has_prev else None
+if dec:
     st.markdown(
-        f"**매출 변화 나눠 보기** · 완료 매출 {ui.won(rev_ch)} 변화 = "
-        f"주문 수 변화 효과 **{ui.won(ord_eff)}** + 객단가 변화 효과 **{ui.won(aov_eff)}**")
+        f"**매출 변화 나눠 보기** · 완료 매출 {ui.won(dec['revenue_change'])} 변화 = "
+        f"주문 수 변화 효과 **{ui.won(dec['order_effect'])}** + 객단가 변화 효과 **{ui.won(dec['aov_effect'])}**")
 
 st.write("")
 left, right = st.columns([3, 2], gap="large")
@@ -48,9 +47,7 @@ with left:
     grain = st.segmented_control("단위", ["일별", "주별"], default="일별", key="ov_grain", label_visibility="collapsed") or "일별"
     col = "date" if grain == "일별" else "week"
     lo = prev[0] if has_prev else cur[0]
-    o = in_period(m["orders"], "order_time", lo, cur[1])
-    o = o[o["order_status"].eq("COMPLETED")]
-    t = o.groupby(col).agg(매출=("total_amount", "sum"), 주문수=("order_id", "nunique")).reset_index()
+    t = sales_trend(m, lo, cur[1], col)
     t["기간"] = (t[col] >= cur[0]).map({True: "분석 기간", False: "비교 기간"})
     base = alt.Chart(t).encode(x=alt.X(f"{col}:T", title=None, axis=alt.Axis(format="%m/%d")))
     bars = base.mark_bar(opacity=0.9).encode(
@@ -66,12 +63,8 @@ with left:
 # ---------------- 성장 지표 요약 ----------------
 with right:
     st.subheader("성장 지표 요약")
-    c = m["raw"]["customer"]
-    new_sign = c[(c["signup_date"] >= cur[0]) & (c["signup_date"] < cur[1])]
-    s = in_period(m["sessions"], "start", *cur)
     rows = [
-        ("Acquisition", "신규 가입 고객 수", len(new_sign), "count",
-         None if not has_prev else len(c[(c["signup_date"] >= prev[0]) & (c["signup_date"] < prev[1])])),
+        ("Acquisition", "신규 가입 고객 수", new_signups(m, *cur), "count", new_signups(m, *prev) if has_prev else None),
         ("Activation", "첫 구매 주문 수", k["first_purchases"], "count", g("first_purchases")),
         ("Activation", "세션 구매 전환율", k["cvr"], "rate", g("cvr")),
         ("Retention", "재구매 고객 비중", k["repeat_rate"], "rate", g("repeat_rate")),
@@ -135,13 +128,9 @@ with left:
 # ---------------- 매출 구성 ----------------
 with right:
     st.subheader("카테고리별 매출")
-    it = in_period(m["items"], "order_time", *cur)
-    it = it[it["order_status"].eq("COMPLETED")]
-    cat = it.groupby("category")["net_sales"].sum().sort_values(ascending=False).reset_index()
-    cat["비중"] = cat["net_sales"] / cat["net_sales"].sum()
+    cat = category_sales(m, *cur)
     if has_prev:
-        ip = in_period(m["items"], "order_time", *prev)
-        cp = ip[ip["order_status"].eq("COMPLETED")].groupby("category")["net_sales"].sum()
+        cp = category_sales(m, *prev).set_index("category")["net_sales"]
         cat["변화"] = [ui.fmt_delta(v, cp.get(c_), "won") for c_, v in zip(cat["category"], cat["net_sales"])]
     ch = alt.Chart(cat).mark_bar(color=ui.C_MAIN, cornerRadiusEnd=3).encode(
         x=alt.X("net_sales:Q", title=None, axis=alt.Axis(format="~s")),
@@ -157,9 +146,7 @@ st.divider()
 a, b = st.columns(2, gap="large")
 with a:
     st.subheader("인기 상품 TOP 5")
-    top = (it.groupby(["product_name", "category"])
-           .agg(상품매출=("net_sales", "sum"), 구매고객=("customer_id", "nunique"), 수량=("quantity", "sum"))
-           .sort_values("상품매출", ascending=False).head(5).reset_index())
+    top = top_products(m, *cur, n=5)
     top["상품매출"] = top["상품매출"].map(ui.won)
     st.dataframe(top.rename(columns={"product_name": "상품", "category": "카테고리"}), hide_index=True, width="stretch")
 with b:

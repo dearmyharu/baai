@@ -332,3 +332,355 @@ def coupon_efficiency(m: dict, start, end) -> dict:
     by["주문당 할인액"] = by["할인액"] / by["주문수"]
     by = by.sort_values("효율", ascending=False).reset_index(drop=True)
     return {"total": total, "by_coupon": by}
+
+
+# ===========================================================================
+# 화면 계산 함수 (화면과 AI 챗봇이 함께 쓰는 계산. 화면 표시용 라벨 변환은 views 에서)
+# ===========================================================================
+def completed_items(m: dict, start, end) -> pd.DataFrame:
+    """기간 안 완료 주문의 주문상품 행."""
+    it = in_period(m["items"], "order_time", start, end)
+    return it[it["order_status"].eq("COMPLETED")]
+
+
+def completed_orders(m: dict, start=None, end=None) -> pd.DataFrame:
+    """완료 주문 (기간을 주지 않으면 전체 관측 기간), 주문 시각 순."""
+    o = m["orders"] if start is None else in_period(m["orders"], "order_time", start, end)
+    return o[o["order_status"].eq("COMPLETED")].sort_values("order_time")
+
+
+# ---------------------------------------------------------------------------
+# 매출·상품
+# ---------------------------------------------------------------------------
+def revenue_decomposition(m: dict, cur: tuple, prev: tuple, k: dict | None = None, kp: dict | None = None) -> dict | None:
+    """완료 매출 변화 = 주문 수 변화 효과 + 객단가 변화 효과. 비교할 주문이 없으면 None."""
+    k = k or kpis(m, *cur)
+    kp = kp or kpis(m, *prev)
+    if not (kp["orders"] and k["orders"]):
+        return None
+    return {"revenue_change": k["revenue"] - kp["revenue"],
+            "order_effect": (k["orders"] - kp["orders"]) * kp["aov"],
+            "aov_effect": (k["aov"] - kp["aov"]) * k["orders"]}
+
+
+def new_signups(m: dict, start, end) -> int:
+    """기간 안 신규 가입 고객 수 (Acquisition 대체 지표)."""
+    c = m["raw"]["customer"]
+    return len(c[(c["signup_date"] >= start) & (c["signup_date"] < end)])
+
+
+def sales_trend(m: dict, start, end, grain: str = "date") -> pd.DataFrame:
+    """완료 매출·주문 수 시계열. grain = date | week | month."""
+    o = completed_orders(m, start, end)
+    return o.groupby(grain).agg(매출=("total_amount", "sum"), 주문수=("order_id", "nunique")).reset_index()
+
+
+def category_sales(m: dict, start, end) -> pd.DataFrame:
+    """카테고리별 상품매출(쿠폰 후, 배송비 제외)과 비중, 매출 순."""
+    cat = completed_items(m, start, end).groupby("category")["net_sales"].sum().sort_values(ascending=False).reset_index()
+    cat["비중"] = cat["net_sales"] / cat["net_sales"].sum()
+    return cat
+
+
+def top_products(m: dict, start, end, n: int = 5) -> pd.DataFrame:
+    """상품매출 상위 n개 상품."""
+    it = completed_items(m, start, end)
+    return (it.groupby(["product_name", "category"])
+            .agg(상품매출=("net_sales", "sum"), 구매고객=("customer_id", "nunique"), 수량=("quantity", "sum"))
+            .sort_values("상품매출", ascending=False).head(n).reset_index())
+
+
+def category_performance(m: dict, start, end) -> pd.DataFrame:
+    """카테고리별 상품매출·주문·고객·공헌이익과 비중 (index = category, 정렬 전)."""
+    it = completed_items(m, start, end)
+    cat = it.groupby("category").agg(상품매출=("net_sales", "sum"), 주문수=("order_id", "nunique"),
+                                     구매고객=("customer_id", "nunique"), 공헌이익=("contribution", "sum"))
+    cat["매출 비중"] = cat["상품매출"] / cat["상품매출"].sum()
+    cat["큐레이션 경유 비중"] = it[it["path"].eq("CURATION")].groupby("category")["net_sales"].sum() / cat["상품매출"]
+    cat["공헌이익률"] = cat["공헌이익"] / cat["상품매출"]
+    return cat
+
+
+def product_performance(m: dict, start, end, category: str | None = None) -> pd.DataFrame:
+    """상품별 상품매출·수량·고객·재구매 고객 비중·큐레이션 경유 비중·공헌이익률, 매출 순."""
+    it = completed_items(m, start, end)
+    sub = it if category in (None, "전체") else it[it["category"].eq(category)]
+    per_cust = sub.groupby(["product_id", "customer_id"])["order_id"].nunique()
+    rep = (per_cust >= 2).groupby("product_id").sum()
+    pr = sub.groupby(["product_id", "product_name", "category"]).agg(
+        상품매출=("net_sales", "sum"), 판매수량=("quantity", "sum"), 구매고객=("customer_id", "nunique"),
+        공헌이익=("contribution", "sum")).reset_index()
+    pr["재구매 고객 비중"] = pr["product_id"].map(rep) / pr["구매고객"]
+    cur_share = sub[sub["path"].eq("CURATION")].groupby("product_id")["net_sales"].sum()
+    pr["큐레이션 경유 비중"] = pr["product_id"].map(cur_share).fillna(0) / pr["상품매출"]
+    pr["공헌이익률"] = pr["공헌이익"] / pr["상품매출"]
+    return pr.sort_values("상품매출", ascending=False)
+
+
+def segment_category_mix(m: dict, start, end, by: str = "customer_type") -> pd.DataFrame:
+    """고객 구분(by)별 카테고리 상품매출 비중. by = customer_type | grade_at_order | visitor_type."""
+    it = completed_items(m, start, end).copy()
+    if by == "grade_at_order":
+        it = it.merge(m["orders"][["order_id", "grade_at_order"]], on="order_id", how="left")
+    mix = it.groupby([by, "category"])["net_sales"].sum().reset_index()
+    mix["비중"] = mix["net_sales"] / mix.groupby(by)["net_sales"].transform("sum")
+    return mix
+
+
+# ---------------------------------------------------------------------------
+# 큐레이션 테마
+# ---------------------------------------------------------------------------
+QUADRANT_HINT = {
+    "관심↑ 구매↓": "관심은 있지만 구매로 이어지지 않음 → 상품 구성·가격·상세 정보 검토",
+    "관심↓ 구매↑": "클릭한 고객은 잘 구매함 → 노출 확대나 배너 메시지 개선 검토",
+}
+
+
+def theme_quadrant(m: dict, start, end) -> tuple[pd.DataFrame, float, float]:
+    """테마별 관심(클릭률) vs 구매(클릭 후 구매율) 사분면. (테마 표, 클릭률 중앙값, 클릭 후 구매율 중앙값)."""
+    tt = theme_table(m, start, end)
+    tt["클릭후구매율"] = tt["구매세션"] / tt["클릭세션"].replace(0, np.nan)
+    mx, my = tt["클릭률"].median(), tt["클릭후구매율"].median()
+
+    def quadrant(r):
+        hi_i, hi_b = r["클릭률"] >= mx, r["클릭후구매율"] >= my
+        if hi_i and not hi_b:
+            return "관심↑ 구매↓"
+        if not hi_i and hi_b:
+            return "관심↓ 구매↑"
+        return "관심↑ 구매↑" if hi_i else "관심↓ 구매↓"
+
+    tt["구분"] = tt.apply(quadrant, axis=1)
+    return tt, mx, my
+
+
+def theme_weekly(m: dict, theme_id: str) -> pd.DataFrame:
+    """테마 하나의 주별 노출·클릭·장바구니·구매 세션과 전환율 (전체 관측 기간)."""
+    ts = m["sessions"][m["sessions"]["theme_id"].eq(theme_id)]
+    w = ts.groupby("week").agg(노출=("session_id", "size"), 클릭=("has_theme_click", "sum"),
+                               장바구니=("has_cart", "sum"), 구매=("has_purchase", "sum")).reset_index()
+    w["클릭률"] = w["클릭"] / w["노출"]
+    w["장바구니→구매"] = w["구매"] / w["장바구니"].replace(0, np.nan)
+    w["구매 전환율"] = w["구매"] / w["노출"]
+    return w
+
+
+def theme_segments(m: dict, theme_id: str, start, end, by: str = "visitor_type") -> pd.DataFrame:
+    """테마 하나를 고객·시간 구분(by)별로 나눈 클릭률·전환율.
+    by = visitor_type | is_new_signup | day_type | daypart."""
+    ts = in_period(m["sessions"], "start", start, end)
+    ts = ts[ts["theme_id"].eq(theme_id)]
+    grp = ts.groupby(by).agg(노출세션=("session_id", "size"), 클릭세션=("has_theme_click", "sum"),
+                             장바구니세션=("has_cart", "sum"), 구매세션=("has_purchase", "sum")).reset_index()
+    grp["클릭률"] = grp["클릭세션"] / grp["노출세션"]
+    grp["장바구니→구매"] = grp["구매세션"] / grp["장바구니세션"].replace(0, np.nan)
+    grp["구매 전환율"] = grp["구매세션"] / grp["노출세션"]
+    return grp
+
+
+def theme_lineup(m: dict, theme_id: str, start, end) -> tuple[pd.DataFrame, float]:
+    """테마 편성 상품별 클릭·장바구니 세션과 경유 매출. (상품 표, 편성 외 상품 경유 매출)."""
+    ev = in_period(m["raw"]["event_log"], "event_time", start, end)
+    ev = ev[ev["theme_id"].eq(theme_id)]
+    clicks = ev[ev["event_type"].eq("product_click")].groupby("product_id")["session_id"].nunique()
+    carts = ev[ev["event_type"].eq("add_to_cart")].groupby("product_id")["session_id"].nunique()
+    it = completed_items(m, start, end)
+    it = it[it["attributed_theme_id"].eq(theme_id)]
+    sales = it.groupby("product_id").agg(경유상품매출=("net_sales", "sum"), 판매수량=("quantity", "sum"))
+    lineup = m["raw"]["curation_product"]
+    lineup = lineup[lineup["theme_id"].eq(theme_id)].merge(
+        m["raw"]["product"][["product_id", "product_name", "category"]], on="product_id")
+    lineup["상품 클릭 세션"] = lineup["product_id"].map(clicks).fillna(0).astype(int)
+    lineup["장바구니 세션"] = lineup["product_id"].map(carts).fillna(0).astype(int)
+    lineup["클릭→장바구니"] = lineup["장바구니 세션"] / lineup["상품 클릭 세션"].replace(0, np.nan)
+    lineup = lineup.join(sales, on="product_id").fillna({"경유상품매출": 0, "판매수량": 0})
+    lineup["매출 비중"] = lineup["경유상품매출"] / max(lineup["경유상품매출"].sum(), 1)
+    extra = it[~it["product_id"].isin(lineup["product_id"])]["net_sales"].sum()
+    return lineup, extra
+
+
+# ---------------------------------------------------------------------------
+# 고객 여정
+# ---------------------------------------------------------------------------
+def step_breakdown(s_cur: pd.DataFrame, s_prev: pd.DataFrame | None, path: str, step_idx: int, by: str) -> pd.DataFrame:
+    """한 퍼널 구간을 by 기준으로 나눈 전환율. 비교 세션이 있으면 변화·p값·전체 변화 기여(%p)도.
+    index = 그룹 값(문자열), 열 = num, den, 분석 기간 [, num_p, den_p, 비교 기간, 변화(%p), p값, 전체 변화 기여(%p)]."""
+    gc = step_rate(s_cur, path, step_idx, by=by).rename(columns={"rate": "분석 기간"})
+    if s_prev is not None:
+        gp = step_rate(s_prev, path, step_idx, by=by)
+        gc = gc.join(gp.rename(columns={"num": "num_p", "den": "den_p", "rate": "비교 기간"}), how="left")
+        gc["변화(%p)"] = (gc["분석 기간"] - gc["비교 기간"]) * 100
+        gc["p값"] = [two_prop_test(r.num, r.den, r.num_p, r.den_p)[1] if pd.notna(r.den_p) and r.den_p > 0 else np.nan
+                    for r in gc.itertuples()]
+        # 전체 변화에 대한 기여: 그룹 분모 비중 × 그룹 전환율 변화
+        gc["전체 변화 기여(%p)"] = (gc["den"] / gc["den"].sum()) * gc["변화(%p)"]
+    return gc
+
+
+def funnel_weekly(m: dict, path: str) -> pd.DataFrame:
+    """경로별 퍼널 구간 전환율의 주별 추이 (전체 관측 기간, '구매 완료' 구간 제외). 열 = week, 구간, 전환율."""
+    order = [lab for lab, _ in FUNNEL_STEPS[path]]
+    ss = path_filter(m["sessions"], path)
+    weeks = []
+    for wk, g in ss.groupby("week"):
+        row = {"week": wk}
+        for i in range(1, len(order)):
+            if order[i] == "구매 완료":
+                continue
+            n, dd, r = step_rate(g, path, i)
+            row[f"{order[i-1]}→{order[i]}"] = r
+        weeks.append(row)
+    return pd.DataFrame(weeks).melt(id_vars="week", var_name="구간", value_name="전환율")
+
+
+# ---------------------------------------------------------------------------
+# 고객·리텐션
+# ---------------------------------------------------------------------------
+def observation_end() -> pd.Timestamp:
+    """관측 종료 다음 날 (2026-10-01)."""
+    from .data import AS_OF
+    return AS_OF.normalize() + pd.Timedelta(days=1)
+
+
+def customer_mix(m: dict, start, end) -> pd.DataFrame:
+    """첫 구매 고객 vs 기존 구매 고객의 고객 수·매출·주문 수·매출 비중 (index = 구분)."""
+    cc = completed_orders(m, start, end)
+    mix = cc.groupby("customer_type").agg(고객수=("customer_id", "nunique"), 매출=("total_amount", "sum"),
+                                          주문수=("order_id", "nunique")).reindex(["첫 구매 고객", "기존 구매 고객"])
+    mix["매출 비중"] = mix["매출"] / mix["매출"].sum()
+    return mix
+
+
+def cohort_retention(m: dict, basis: str = "lifetime") -> tuple[pd.DataFrame, pd.Series]:
+    """월별 코호트의 1~5개월 후 재구매(유지)율. 관찰할 수 없는 칸은 빠진다.
+    basis = lifetime (생애 첫 구매 고객) | observed (관측 기간 첫 주문 고객, 기존 고객 포함).
+    (칸별 표, 코호트 크기)."""
+    comp = completed_orders(m)
+    obs_end = observation_end()
+    if basis == "lifetime":
+        first = comp[comp["is_first_purchase"].eq(1)].groupby("customer_id")["month"].min()
+    else:
+        first = comp.groupby("customer_id")["month"].min()
+    act = comp[["customer_id", "month"]].drop_duplicates()
+    act = act[act["customer_id"].isin(first.index)]
+    act["cohort"] = act["customer_id"].map(first)
+    act["k"] = ((act["month"].dt.year - act["cohort"].dt.year) * 12 + act["month"].dt.month - act["cohort"].dt.month)
+    size = first.value_counts().sort_index()
+    ret = act[act["k"] >= 1].groupby(["cohort", "k"])["customer_id"].nunique().reset_index(name="고객")
+    grid = pd.MultiIndex.from_product([size.index, range(1, 6)], names=["cohort", "k"]).to_frame(index=False)
+    grid = grid[grid["cohort"].dt.year * 12 + grid["cohort"].dt.month + grid["k"] <= obs_end.year * 12 + obs_end.month - 1]
+    ret = grid.merge(ret, how="left").fillna({"고객": 0})
+    ret["유지율"] = ret["고객"] / ret["cohort"].map(size)
+    ret["코호트"] = ret["cohort"].dt.strftime("%Y-%m") + " (n=" + ret["cohort"].map(size).astype(str) + ")"
+    ret["경과"] = ret["k"].astype(str) + "개월 후"
+    return ret, size
+
+
+def _order_sequence(m: dict) -> pd.DataFrame:
+    comp = completed_orders(m)
+    seq = comp[["customer_id", "order_time", "is_first_purchase"]].copy()
+    seq["next_time"] = seq.groupby("customer_id")["order_time"].shift(-1)
+    seq["gap_days"] = (seq["next_time"] - seq["order_time"]).dt.total_seconds() / 86400
+    return seq
+
+
+def repeat_rates(m: dict, windows=(7, 30, 60)) -> pd.DataFrame:
+    """관측 기간 첫 완료 주문 후 N일 안 재구매율, 첫 주문 월 × 고객 구분별.
+    N일이 관측 기간 안에 끝나는 고객만 대상. 열 = 첫 주문 월, 구분, 기준, 대상 고객, 재구매율."""
+    obs_end = observation_end()
+    firsts = _order_sequence(m).groupby("customer_id").head(1).copy()
+    firsts["month"] = firsts["order_time"].dt.to_period("M").dt.start_time
+    firsts["구분"] = np.where(firsts["is_first_purchase"].eq(1), "생애 첫 구매 고객", "기존 구매 고객")
+    rows = []
+    for win in windows:
+        elig = firsts[firsts["order_time"] + pd.Timedelta(days=win) <= obs_end]
+        for (mon, grp_), g in elig.groupby(["month", "구분"]):
+            rows.append({"첫 주문 월": mon.strftime("%Y-%m"), "구분": grp_, "기준": f"{win}일 재구매율",
+                         "대상 고객": len(g), "재구매율": (g["gap_days"] <= win).mean()})
+    return pd.DataFrame(rows)
+
+
+GAP_BINS = [0, 3, 7, 14, 21, 30, 45, 60, 90, 200]
+GAP_LABELS = ["0-3일", "4-7일", "8-14일", "15-21일", "22-30일", "31-45일", "46-60일", "61-90일", "91일+"]
+
+
+def repeat_gaps(m: dict) -> dict:
+    """연속된 두 완료 주문 사이 간격 분포 (전체 관측 기간).
+    {"dist": 간격·건수·비중 표, "median_days": 중앙값, "orders_per_buyer": 구매 고객당 완료 주문}."""
+    gaps = _order_sequence(m)["gap_days"].dropna()
+    gd = pd.cut(gaps, bins=GAP_BINS, labels=GAP_LABELS, include_lowest=True).value_counts().reindex(GAP_LABELS).reset_index()
+    gd.columns = ["간격", "건수"]
+    gd["비중"] = gd["건수"] / gd["건수"].sum()
+    return {"dist": gd, "median_days": gaps.median() if len(gaps) else np.nan,
+            "orders_per_buyer": completed_orders(m).groupby("customer_id").size().mean()}
+
+
+RFM_RULES = pd.DataFrame([
+    ("신규 구매", "생애 첫 구매가 최근 30일 안이고 관측 기간 완료 주문 1건 이하", "첫 구매 경험 강화, 두 번째 구매 유도"),
+    ("핵심", "마지막 구매 30일 이내 · 관측 기간 주문 4건 이상", "이탈 방지, 혜택 유지"),
+    ("충성", "마지막 구매 60일 이내 · 주문 2건 이상", "구매 빈도 높이기, 교차 판매"),
+    ("성장 가능", "마지막 구매 30일 이내 · 주문 1건 이하", "재구매 유도"),
+    ("관심 필요", "마지막 구매 31~60일 · 주문 1건 이하", "리마인드"),
+    ("이탈 우려", "마지막 구매 60일 초과 · 주문 2건 이상", "복귀 유도"),
+    ("휴면 추정", "마지막 구매 60일 초과 · 주문 1건 이하 (4/1 이전 마지막 구매 포함)", "저비용 재활성화 시도"),
+], columns=["고객군", "분류 기준", "활용 방향 (가설)"])
+RFM_ORDER = list(RFM_RULES["고객군"])
+
+
+def rfm_segments(m: dict, ref) -> pd.DataFrame:
+    """기준일(ref, 미포함) 시점 고객별 R·F·M과 규칙 기반 고객군 (index = customer_id).
+    F·M은 관측 기간(4/1~) 기준, R은 4/1 이전 마지막 구매일도 반영. 이탈 확률이 아니다."""
+    comp = completed_orders(m)
+    hist = comp[comp["order_time"] < ref]
+    g = hist.groupby("customer_id").agg(last=("order_time", "max"), F=("order_id", "nunique"), M=("total_amount", "sum"))
+    snap = m["raw"]["customer_initial_snapshot"].set_index("customer_id")
+    prior_last = snap["last_purchase_date"].dropna()
+    allc = g.index.union(prior_last.index)
+    r = pd.DataFrame(index=allc)
+    r["last"] = g["last"].reindex(allc).fillna(prior_last.reindex(allc))
+    r["F"] = g["F"].reindex(allc).fillna(0).astype(int)
+    r["M"] = g["M"].reindex(allc).fillna(0)
+    r["recency"] = (ref - r["last"]).dt.days
+    first_new = comp[comp["is_first_purchase"].eq(1)].groupby("customer_id")["order_time"].min()
+    r["first_purchase"] = first_new.reindex(allc)
+
+    def seg(x):
+        if pd.notna(x.first_purchase) and x.first_purchase < ref and (ref - x.first_purchase).days <= 30 and x.F <= 1:
+            return "신규 구매"
+        if x.recency <= 30 and x.F >= 4:
+            return "핵심"
+        if x.recency <= 60 and x.F >= 2:
+            return "충성"
+        if x.recency <= 30:
+            return "성장 가능"
+        if x.recency <= 60:
+            return "관심 필요"
+        if x.F >= 2:
+            return "이탈 우려"
+        return "휴면 추정"
+
+    r["고객군"] = r.apply(seg, axis=1)
+    return r
+
+
+def rfm_summary(m: dict, start, end, r: pd.DataFrame | None = None) -> pd.DataFrame:
+    """고객군별 고객 수·평균 주문·경과일 중앙값·분석 기간 매출과 비중. 기준일 = 분석 기간 종료일."""
+    r = rfm_segments(m, end) if r is None else r
+    cur_orders = completed_orders(m, start, end)
+    summ = r.groupby("고객군").agg(고객수=("F", "size"), 평균주문=("F", "mean"), 경과일중앙값=("recency", "median"))
+    cur_rev = cur_orders.assign(seg=cur_orders["customer_id"].map(r["고객군"])).groupby("seg")["total_amount"].sum()
+    summ["분석 기간 매출"] = cur_rev.reindex(summ.index).fillna(0)
+    summ["매출 비중"] = summ["분석 기간 매출"] / max(summ["분석 기간 매출"].sum(), 1)
+    summ["고객 비중"] = summ["고객수"] / summ["고객수"].sum()
+    return summ.reindex(RFM_ORDER).dropna(how="all").reset_index()
+
+
+def rfm_preference(m: dict, start, end, dim: str = "category", r: pd.DataFrame | None = None) -> pd.DataFrame:
+    """RFM 고객군별 카테고리(또는 theme_name) 상품매출 비중. 테마는 큐레이션 경유 주문만."""
+    r = rfm_segments(m, end) if r is None else r
+    it = completed_items(m, start, end).assign(고객군=lambda x: x["customer_id"].map(r["고객군"]))
+    if dim == "theme_name":
+        it = it.dropna(subset=["theme_name"])
+    pv = it.groupby(["고객군", dim])["net_sales"].sum().reset_index()
+    pv["비중"] = pv["net_sales"] / pv.groupby("고객군")["net_sales"].transform("sum")
+    return pv
