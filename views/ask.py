@@ -31,6 +31,23 @@ if not KEY:
     st.info("AI 모델이 아직 연결되지 않았습니다. 지금은 아래 **예시 질문**에 답할 수 있어요. "
             "Secrets에 GEMINI_API_KEY를 넣으면 자유롭게 질문할 수 있습니다.", icon=":material/info:")
 
+@st.cache_data(ttl=3600, show_spinner=False)
+def model_info(key: str) -> tuple[str, list[str]]:
+    try:
+        return llm.pick_model(key), llm.text_models(key)
+    except Exception as e:  # 목록 조회 실패해도 화면은 계속
+        return f"(확인 실패: {e})", []
+
+
+if KEY:
+    cur_model, all_models = model_info(KEY)
+    with st.expander(f"AI 모델: {cur_model}", icon=":material/tune:"):
+        st.markdown("기본은 이 키로 쓸 수 있는 **가장 낮은(가벼운) Flash 모델**을 자동으로 고릅니다. "
+                    "다른 모델을 쓰려면 Streamlit Secrets에 아래 한 줄을 추가하고 앱을 다시 시작하세요.")
+        st.code(f'GEMINI_MODEL = "{cur_model}"', language="toml")
+        if all_models:
+            st.caption("이 키로 쓸 수 있는 모델: " + ", ".join(all_models))
+
 if "ask_log" not in st.session_state:
     st.session_state.ask_log = []
 log = st.session_state.ask_log

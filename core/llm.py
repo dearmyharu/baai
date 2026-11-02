@@ -139,25 +139,47 @@ def _generate(key: str, model: str, body: dict) -> dict:
 _MODEL_CACHE: dict[str, str] = {}
 
 
-def pick_model(key: str) -> str:
-    """GEMINI_MODEL이 있으면 그 모델, 없으면 이 키로 쓸 수 있는 Flash 모델 중 가장 최신."""
-    if os.getenv("GEMINI_MODEL"):
-        return os.getenv("GEMINI_MODEL")
-    if key in _MODEL_CACHE:
-        return _MODEL_CACHE[key]
+def _setting(name: str) -> str:
+    """Streamlit Secrets 또는 환경변수에서 설정값을 읽는다."""
+    try:
+        import streamlit as st
+        v = st.secrets.get(name)
+        if v:
+            return str(v).strip()
+    except Exception:
+        pass
+    return (os.getenv(name) or "").strip()
+
+
+def text_models(key: str) -> list[str]:
+    """이 키로 쓸 수 있는 텍스트 생성 모델 (실험·미리보기 제외)."""
     d = _call(key, "models?pageSize=200")
     names = [m["name"].split("/", 1)[1] for m in d.get("models", [])
              if "generateContent" in m.get("supportedGenerationMethods", [])]
-    bad = ("lite", "image", "tts", "audio", "live", "embedding", "exp", "preview", "thinking", "8b", "learnlm")
-    flash = [n for n in names if "flash" in n and not any(b in n for b in bad)]
-    pool = flash or [n for n in names if "flash" in n] or names
+    bad = ("image", "tts", "audio", "live", "embedding", "exp", "preview", "thinking", "learnlm", "gemma", "aqa")
+    return [n for n in names if n.startswith("gemini-") and not any(b in n for b in bad)]
+
+
+def _version(n: str) -> float | None:
+    v = re.findall(r"gemini-(\d+(?:\.\d+)?)", n)
+    return float(v[0]) if v else None
+
+
+def pick_model(key: str) -> str:
+    """GEMINI_MODEL이 있으면 그 모델. 없으면 이 키로 쓸 수 있는 가장 낮은(가벼운) Flash 계열 모델:
+    버전이 가장 낮은 것, 같은 버전이면 flash-lite를 먼저."""
+    fixed = _setting("GEMINI_MODEL")
+    if fixed:
+        return fixed
+    if key in _MODEL_CACHE:
+        return _MODEL_CACHE[key]
+    names = text_models(key)
+    pool = [n for n in names if "flash" in n and _version(n) is not None]
+    if not pool:
+        pool = [n for n in names if _version(n) is not None] or names
     if not pool:
         raise LLMError("이 키로 쓸 수 있는 Gemini 모델을 찾지 못했습니다.")
-
-    def ver(n):
-        v = re.findall(r"(\d+(?:\.\d+)?)", n)
-        return (float(v[0]) if v else 0.0, "latest" not in n, len(n))
-    _MODEL_CACHE[key] = max(pool, key=ver)
+    _MODEL_CACHE[key] = min(pool, key=lambda n: (_version(n) or 99, "lite" not in n, "latest" in n, len(n)))
     return _MODEL_CACHE[key]
 
 
