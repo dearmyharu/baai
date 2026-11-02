@@ -33,14 +33,14 @@ if not KEY:
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def model_info(key: str) -> tuple[str, list[str]]:
-    try:
-        return llm.pick_model(key), llm.text_models(key)
-    except Exception as e:  # 목록 조회 실패해도 화면은 계속
-        return f"(확인 실패: {e})", []
+    return llm.pick_model(key), llm.text_models(key)   # 실패하면 예외 → 캐시에 남지 않음
 
 
 if KEY:
-    cur_model, all_models = model_info(KEY)
+    try:
+        cur_model, all_models = model_info(KEY)
+    except Exception as e:  # 목록 조회 실패해도 화면은 계속 (다음 화면 갱신 때 다시 시도)
+        cur_model, all_models = f"(확인 실패: {e})", []
     with st.expander(f"AI 모델: {cur_model}", icon=":material/tune:"):
         st.markdown("기본은 이 키로 쓸 수 있는 **가장 낮은(가벼운) Flash 모델**을 자동으로 고릅니다. "
                     "다른 모델을 쓰려면 Streamlit Secrets에 아래 한 줄을 추가하고 앱을 다시 시작하세요.")
