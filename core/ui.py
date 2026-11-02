@@ -65,8 +65,12 @@ def pct(v, d=1):
     return "–" if v is None or pd.isna(v) else f"{v*100:.{d}f}%"
 
 
+def times(v):
+    return "–" if v is None or pd.isna(v) else f"{v:,.1f}배"
+
+
 def fmt_value(v, unit):
-    return {"rate": pct, "won": won}.get(unit, num)(v)
+    return {"rate": pct, "won": won, "x": times}.get(unit, num)(v)
 
 
 def fmt_delta(cur, prev, unit):

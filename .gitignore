@@ -4,3 +4,4 @@ growth_lab/
 __pycache__/
 *.pyc
 .venv/
+*.bak_*

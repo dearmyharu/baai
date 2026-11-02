@@ -295,3 +295,40 @@ def detect_changes(m: dict, cur: tuple, prev: tuple, min_n: int = 100, alpha: fl
     # 통계 검정을 거친 비율 지표를 먼저, 금액 지표는 그 뒤에 변화율 순으로
     out.sort(key=lambda c: (pd.notna(c.get("p_value")), c.get("z", 0)), reverse=True)
     return out
+
+
+# ---------------------------------------------------------------------------
+# 쿠폰 효율 (ROAS 대신 쓰는 프로모션 효율 지표)
+# ---------------------------------------------------------------------------
+def coupon_efficiency(m: dict, start, end) -> dict:
+    """쿠폰 효율 = 쿠폰 사용 완료 주문의 완료 매출 ÷ 쿠폰 할인액.
+
+    '쿠폰 때문에 생긴 매출'이 아니라 '쿠폰을 쓴 주문의 매출'이다(쿠폰 없이도 샀을 고객 포함).
+    반환: {"total": {...}, "by_coupon": DataFrame}
+    """
+    o = in_period(m["orders"], "order_time", start, end)
+    comp = o[o["order_status"].eq("COMPLETED")]
+    cp = comp[comp["has_coupon"]]
+    nc = comp[~comp["has_coupon"]]
+    discount = cp["coupon_discount_amount"].sum()
+    sales = cp["total_amount"].sum()
+    total = {
+        "coupon_orders": int(cp["order_id"].nunique()),
+        "coupon_order_share": safe_div(cp["order_id"].nunique(), comp["order_id"].nunique()),
+        "discount": discount,
+        "coupon_sales": sales,
+        "efficiency": safe_div(sales, discount),
+        "aov_coupon": safe_div(sales, cp["order_id"].nunique()),
+        "aov_no_coupon": safe_div(nc["total_amount"].sum(), nc["order_id"].nunique()),
+    }
+    names = m["raw"]["coupon"].set_index("coupon_id")
+    by = (cp.groupby("coupon_id")
+          .agg(주문수=("order_id", "nunique"), 할인액=("coupon_discount_amount", "sum"),
+               쿠폰주문매출=("total_amount", "sum"), 고객수=("customer_id", "nunique"))
+          .reset_index())
+    by["쿠폰"] = by["coupon_id"].map(names["coupon_name"]).fillna(by["coupon_id"])
+    by["할인 방식"] = by["coupon_id"].map(names["discount_type"])
+    by["효율"] = by["쿠폰주문매출"] / by["할인액"].where(by["할인액"] > 0)
+    by["주문당 할인액"] = by["할인액"] / by["주문수"]
+    by = by.sort_values("효율", ascending=False).reset_index(drop=True)
+    return {"total": total, "by_coupon": by}

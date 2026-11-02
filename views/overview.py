@@ -4,7 +4,7 @@ import pandas as pd
 import streamlit as st
 
 from core import ui
-from core.metrics import detect_changes, in_period, kpis, theme_table
+from core.metrics import coupon_efficiency, detect_changes, in_period, kpis, theme_table
 
 m = ui.get_mart()
 cur, prev = ui.period_controls()
@@ -170,3 +170,48 @@ with b:
     st.dataframe(view, hide_index=True, width="stretch")
     ui.note("경유 매출 = 해당 테마 화면을 거쳐 발생한 완료 주문 금액(경로 귀속). 테마가 만들어낸 증분 매출은 아닙니다.")
     st.page_link("views/curation.py", label="상품·큐레이션 자세히 보기", icon=":material/arrow_forward:")
+
+st.divider()
+
+# ---------------- 쿠폰 효율 ----------------
+st.subheader("쿠폰 효율")
+ce = coupon_efficiency(m, *cur)
+cep = coupon_efficiency(m, *prev) if has_prev else {"total": {}}
+t_, tp_ = ce["total"], cep["total"].get
+ui.kpi_row([
+    ("쿠폰 할인액", t_["discount"], tp_("discount"), "won", "완료 주문에 적용된 쿠폰 할인 금액 합"),
+    ("쿠폰 주문 매출", t_["coupon_sales"], tp_("coupon_sales"), "won", "쿠폰을 쓴 완료 주문의 total_amount 합"),
+    ("쿠폰 효율", t_["efficiency"], tp_("efficiency"), "x", "쿠폰 주문 매출 ÷ 쿠폰 할인액. 할인 1원당 쿠폰 주문 매출"),
+    ("쿠폰 사용 주문 비중", t_["coupon_order_share"], tp_("coupon_order_share"), "rate", "쿠폰 사용 완료 주문 ÷ 완료 주문"),
+], has_prev)
+by = ce["by_coupon"].copy()
+if by.empty:
+    st.info("선택한 기간에 쿠폰을 쓴 완료 주문이 없습니다.")
+else:
+    by["할인 방식"] = by["할인 방식"].map({"FIXED": "정액", "PERCENT": "정률"}).fillna("기타")
+    by["표본"] = by["주문수"].map(lambda n: "30건 미만" if n < 30 else "")
+    by["small"] = by["주문수"] < 30
+    a, b = st.columns([3, 2], gap="large")
+    with a:
+        ch = alt.Chart(by).mark_bar(cornerRadiusEnd=3).encode(
+            x=alt.X("효율:Q", title="쿠폰 효율(배)"),
+            y=alt.Y("쿠폰:N", sort="-x", title=None),
+            color=alt.Color("할인 방식:N", scale=alt.Scale(domain=["정액", "정률", "기타"],
+                                                       range=[ui.C_MAIN, ui.C_ACCENT, ui.C_PREV]),
+                            legend=alt.Legend(title=None, orient="top")),
+            opacity=alt.condition("datum.small", alt.value(0.4), alt.value(1.0)),
+            tooltip=["쿠폰", "할인 방식", alt.Tooltip("주문수:Q", format=","),
+                     alt.Tooltip("할인액:Q", format=",.0f"), alt.Tooltip("쿠폰주문매출:Q", format=",.0f"),
+                     alt.Tooltip("효율:Q", format=".1f")])
+        st.altair_chart(ch.properties(height=max(200, 26 * len(by))), width="stretch")
+        ui.note("흐린 막대는 주문 30건 미만이라 순위를 믿기 어려운 쿠폰입니다.")
+    with b:
+        st.metric("쿠폰 주문 객단가 vs 미사용 주문", ui.won(t_["aov_coupon"]),
+                  f"미사용 {ui.won(t_['aov_no_coupon'])}", delta_color="off", border=True)
+        view = pd.DataFrame({"쿠폰": by["쿠폰"], "주문": by["주문수"].map(ui.num), "할인액": by["할인액"].map(ui.won),
+                             "효율": by["효율"].map(ui.times), "표본": by["표본"]})
+        st.dataframe(view, hide_index=True, width="stretch")
+    ui.note("쿠폰 효율은 '쿠폰 때문에 생긴 매출'이 아니라 '쿠폰을 쓴 주문의 매출'을 할인액으로 나눈 값입니다. "
+            "쿠폰 없이도 샀을 고객이 섞여 있고, 최소 주문 금액 조건이 객단가를 끌어올립니다. "
+            "쿠폰의 실제 효과는 Growth Lab에서 쿠폰 지급군/미지급군 실험으로 확인하세요. "
+            "ROAS는 광고비·광고 유입 데이터가 없어 제공하지 않습니다.")
