@@ -684,3 +684,74 @@ def rfm_preference(m: dict, start, end, dim: str = "category", r: pd.DataFrame |
     pv = it.groupby(["고객군", dim])["net_sales"].sum().reset_index()
     pv["비중"] = pv["net_sales"] / pv.groupby("고객군")["net_sales"].transform("sum")
     return pv
+
+
+def order_status_summary(m: dict, start, end) -> pd.DataFrame:
+    """주문 상태별(COMPLETED/CANCELLED/REFUNDED 등) 주문 수·금액·비율."""
+    o = in_period(m["orders"], "order_time", start, end)
+    g = o.groupby("order_status").agg(주문수=("order_id", "nunique"), 금액=("total_amount", "sum"))
+    g["비율"] = g["주문수"] / g["주문수"].sum()
+    return g.sort_values("주문수", ascending=False).reset_index()
+
+
+# ---------------------------------------------------------------------------
+# 상품 성장 잠재력 (규칙 기반 탐색 점수. 미래 매출 예측이 아니다)
+# ---------------------------------------------------------------------------
+POTENTIAL_HINT = {
+    "키울 후보": "매출은 아직 낮지만 관심·구매 의향·전환·성장 지표가 좋음 → 노출 확대, 큐레이션 편성 검토",
+    "주력": "매출도 높고 지표도 좋음 → 재고·노출 유지",
+    "점검 필요": "매출은 높지만 지표가 약해짐 → 가격·상세 정보·경쟁 상품 확인",
+    "관망": "매출과 지표 모두 낮음 → 우선순위 낮음",
+}
+
+
+def _product_activity(m: dict, start, end) -> pd.DataFrame:
+    ev = in_period(m["raw"]["event_log"], "event_time", start, end)
+    ev = ev.dropna(subset=["product_id"])
+    clicks = ev[ev["event_type"].eq("product_click")].groupby("product_id")["session_id"].nunique()
+    carts = ev[ev["event_type"].eq("add_to_cart")].groupby("product_id")["session_id"].nunique()
+    it = completed_items(m, start, end)
+    sales = it.groupby("product_id").agg(주문수=("order_id", "nunique"), 상품매출=("net_sales", "sum"))
+    p = m["raw"]["product"].set_index("product_id")[["product_name", "category"]]
+    df = p.join(clicks.rename("클릭세션")).join(carts.rename("장바구니세션")).join(sales)
+    return df.fillna({"클릭세션": 0, "장바구니세션": 0, "주문수": 0, "상품매출": 0})
+
+
+def product_potential(m: dict, start, end, prev: tuple | None = None, min_clicks: int = 30) -> pd.DataFrame:
+    """상품별 잠재력 점수(0~100)와 구분.
+
+    점수 = 클릭 세션 수(관심) · 장바구니율(구매 의향) · 클릭당 완료 주문(전환) · 매출 증가율(성장, 비교 기간이 있을 때)
+    각각을 '클릭 세션 min_clicks 이상 상품' 안의 백분위로 바꿔 평균한 값.
+    구분 = 점수 중앙값 × 상품매출 중앙값 기준 사분면 (키울 후보 / 주력 / 점검 필요 / 관망), 표본 부족 상품은 '표본 부족'.
+    클릭당 완료 주문은 같은 세션 클릭 여부와 무관한 근사치다."""
+    df = _product_activity(m, start, end)
+    df["장바구니율"] = df["장바구니세션"] / df["클릭세션"].replace(0, np.nan)
+    df["클릭당 주문"] = df["주문수"] / df["클릭세션"].replace(0, np.nan)
+    parts = {"관심": "클릭세션", "구매 의향": "장바구니율", "전환": "클릭당 주문"}
+    if prev is not None:
+        pv = _product_activity(m, *prev)
+        df["이전 상품매출"] = pv["상품매출"]
+        df["이전 클릭세션"] = pv["클릭세션"]
+        df["매출 증가율"] = (df["상품매출"] - df["이전 상품매출"]) / df["이전 상품매출"].replace(0, np.nan)
+        df["클릭 증가율"] = (df["클릭세션"] - df["이전 클릭세션"]) / df["이전 클릭세션"].replace(0, np.nan)
+        parts["성장"] = "매출 증가율"
+    ok = df["클릭세션"] >= min_clicks
+    for name, col in parts.items():
+        df[f"{name} 점수"] = df.loc[ok, col].rank(pct=True) * 100
+    score_cols = [f"{n} 점수" for n in parts]
+    df["잠재력 점수"] = df.loc[ok, score_cols].mean(axis=1, skipna=True)
+    s_med, v_med = df.loc[ok, "잠재력 점수"].median(), df.loc[ok, "상품매출"].median()
+    hi_s, hi_v = df["잠재력 점수"] >= s_med, df["상품매출"] >= v_med
+    df["구분"] = np.select([~ok, hi_s & ~hi_v, hi_s & hi_v, ~hi_s & hi_v], ["표본 부족", "키울 후보", "주력", "점검 필요"], "관망")
+    df.attrs.update(score_median=s_med, sales_median=v_med, min_clicks=min_clicks, parts=list(parts))
+    return df.reset_index().sort_values("잠재력 점수", ascending=False, na_position="last").reset_index(drop=True)
+
+
+def rising_products(m: dict, cur: tuple, prev: tuple, n: int = 5, min_prev_orders: int = 10) -> pd.DataFrame:
+    """비교 기간 대비 상품매출 증가율 상위 n개 (비교 기간 완료 주문 min_prev_orders건 이상 상품만)."""
+    a, b = _product_activity(m, *cur), _product_activity(m, *prev)
+    df = a.join(b[["주문수", "상품매출", "클릭세션"]].add_prefix("이전 "))
+    df = df[df["이전 주문수"] >= min_prev_orders]
+    df["매출 증가율"] = (df["상품매출"] - df["이전 상품매출"]) / df["이전 상품매출"]
+    df["클릭 증가율"] = (df["클릭세션"] - df["이전 클릭세션"]) / df["이전 클릭세션"].replace(0, np.nan)
+    return df.sort_values("매출 증가율", ascending=False).head(n).reset_index()
