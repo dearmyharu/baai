@@ -224,7 +224,7 @@ CASES = [
     dict(id=13, level="L2", q="고객이 어느 단계에서 제일 많이 빠져?", period="2026-09", tool="get_funnel", check=FACTS, expected=q13),
     dict(id=14, level="L2", q="큐레이션으로 들어온 고객이 일반 탐색보다 더 잘 사?", period="2026-09", tool="get_funnel",
          check=FACTS + ". 유의성(p값)과 '효과로 단정할 수 없음'을 함께 말해야 함", expected=q14),
-    dict(id=15, level="L2", q="고객군마다 잘 팔리는 카테고리가 달라?", period="2026-09", tool="get_segments", check=FACTS, expected=q15),
+    dict(id=15, level="L2", q="고객군마다 잘 팔리는 카테고리가 달라?", period="2026-09", tool="segment_preference", check=FACTS, expected=q15),
     dict(id=16, level="L2", q="연령대나 성별, 지역에 따라 구매가 달라?", period="2026-09", tool="(미지원)", check=PARTIAL,
          expected=lambda m: {"상태": "연령·성별·지역 컬럼은 customer 테이블에 있으나 분석 도구에 아직 연결 안 됨",
                              "대체 안내": "방문 유형·첫 구매/기존·주문 당시 등급별 비교"}),

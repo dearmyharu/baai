@@ -163,11 +163,12 @@ def get_funnel(m, start, end, path="ALL"):
     facts = [f"{a} {int(n):,}세션" + (f" (직전 단계 대비 {pct(r)})" if pd.notna(r) else "")
              for a, n, r in zip(f["단계"], f["세션 수"], f["직전 단계 대비 전환율"])]
     facts.append(f"가장 많이 빠지는 구간: {order[i-1]} → {order[i]} ({pct(worst['직전 단계 대비 전환율'])})")
-    if path == "ALL":
-        c, b = s[s["path"].eq("CURATION")], s[s["path"].eq("BROWSE")]
-        _, p = M.two_prop_test(c["has_purchase"].sum(), len(c), b["has_purchase"].sum(), len(b))
-        facts.append(f"세션 구매 전환율: 큐레이션 경유 {pct(c['has_purchase'].mean())} vs 일반 탐색 {pct(b['has_purchase'].mean())}"
-                     f" (p={p:.3f})")
+    # 경로 비교는 어느 경로를 보든 항상 함께 (경로 비교 질문의 기준 지표: 세션 구매 전환율)
+    c, b = s[s["path"].eq("CURATION")], s[s["path"].eq("BROWSE")]
+    _, p = M.two_prop_test(c["has_purchase"].sum(), len(c), b["has_purchase"].sum(), len(b))
+    sig = "유의한 차이" if pd.notna(p) and p < 0.05 else "유의한 차이 아님"
+    facts.append(f"세션 구매 전환율(구매 세션 ÷ 세션): 큐레이션 경유 {pct(c['has_purchase'].mean())} vs 일반 탐색 "
+                 f"{pct(b['has_purchase'].mean())} (p={p:.3f}, {sig})")
     return _result("구매 퍼널", plabel, facts, {"kind": "funnel", "data": f, "x": "세션 수", "y": "단계"}, f,
                    ["'결제 진입' 이벤트가 없어 장바구니 다음이 바로 구매",
                     "경로별 차이는 고객 구성 차이일 수 있어 큐레이션 효과로 단정할 수 없음"])
@@ -213,6 +214,28 @@ def get_retention(m, start, end):
                    {"kind": "bar", "data": g["dist"], "x": "간격", "y": "비중", "vertical": True, "y_fmt": ".0%"},
                    mix.reset_index().rename(columns={"customer_type": "구분"}),
                    ["재구매 간격은 연속된 두 완료 주문 사이 일수"])
+
+
+SEGMENT_BY = {"customer_type": "첫 구매/기존 구매 고객", "grade_at_order": "주문 당시 회원 등급", "visitor_type": "신규/재방문"}
+
+
+def segment_preference(m, start, end, by="customer_type"):
+    cur = _period(start, end)
+    mix = M.segment_category_mix(m, *cur, by=by)
+    labels = {"NEW": "신규 방문", "RETURNING": "재방문", "UNKNOWN": "판정 불가"}
+    mix[by] = mix[by].map(lambda v: labels.get(v, v))
+    facts = []
+    for g, d in mix.sort_values("비중", ascending=False).groupby(by, sort=False):
+        top = d.head(3)
+        facts.append(f"{g}: " + ", ".join(f"{r.category} {pct(r.비중)}" for r in top.itertuples()))
+    tops = mix.sort_values("비중", ascending=False).groupby(by).head(1)
+    same = tops["category"].nunique() == 1
+    facts.append("모든 고객군의 1위 카테고리가 같습니다: " + tops["category"].iloc[0] if same
+                 else "고객군마다 1위 카테고리가 다릅니다")
+    table = mix.rename(columns={by: SEGMENT_BY[by], "category": "카테고리", "net_sales": "상품매출"})
+    return _result(f"{SEGMENT_BY[by]}별 선호 카테고리", _label(cur), facts,
+                   {"kind": "bar", "data": tops.rename(columns={by: "고객군"}), "x": "비중", "y": "고객군", "x_fmt": ".0%"},
+                   table, ["비중 = 고객군 상품매출 중 해당 카테고리 비중(행마다 합 100%)", "회원 등급은 현재가 아니라 주문 당시 등급"])
 
 
 def get_segments(m, start, end):
@@ -277,21 +300,27 @@ class Tool:
 PERIOD = {"start": "시작일 YYYY-MM-DD", "end": "끝 다음 날 YYYY-MM-DD (미포함)"}
 
 TOOLS = {t.name: t for t in [
-    Tool("get_kpis", "기간의 핵심 지표(매출·주문·고객·객단가·전환율·재구매·쿠폰·취소환불)와 직전 같은 길이 기간 대비 변화",
-         PERIOD | {"compare": "직전 기간 비교 여부(true)"}, get_kpis, [1, 2, 5, 6, 9]),
+    Tool("get_kpis", "기간의 핵심 지표(매출·주문·고객·객단가·전환율·재구매·쿠폰·취소환불)와 직전 기간 대비 변화. "
+         "'지난달 매출', '이번 주 주문 수', '객단가', '구매 고객 수', '취소·환불' 질문",
+         PERIOD, get_kpis, [1, 2, 5, 6, 9]),
     Tool("get_coupon_efficiency", "쿠폰 할인액 대비 쿠폰 사용 주문 매출(쿠폰 효율)과 쿠폰별 효율. ROAS 대신 쓰는 지표",
          PERIOD, get_coupon_efficiency, [8]),
     Tool("rank_items", "상품 또는 카테고리 상품매출 순위", PERIOD | {"target": "product | category", "n": "개수"}, rank_items, [3, 4]),
     Tool("explain_revenue_change", "직전 기간 대비 완료 매출 변화를 주문 수 효과와 객단가 효과로 분해하고 함께 달라진 지표 제시",
          PERIOD, explain_revenue_change, [10, 20]),
     Tool("get_trend", "완료 매출·주문 수 추이", PERIOD | {"grain": "date | week | month"}, get_trend, [11]),
-    Tool("get_funnel", "방문→상품 클릭→장바구니→구매 퍼널과 가장 많이 빠지는 구간, 경로별 구매 전환율 비교",
+    Tool("get_funnel", "방문→상품 클릭→장바구니→구매 퍼널과 가장 많이 빠지는 구간. 큐레이션 경유 vs 일반 탐색의 "
+         "세션 구매 전환율 비교와 유의성도 항상 포함하므로 경로 비교 질문도 path=ALL로 한 번만 부른다",
          PERIOD | {"path": "ALL | CURATION | BROWSE"}, get_funnel, [13, 14, 28]),
-    Tool("detect_changes", "직전 기간 대비 통계적으로 크게 달라진 지표 자동 탐지", PERIOD | {"strict": "true면 p<0.05"},
+    Tool("detect_changes", "직전 기간 대비 통계적으로 크게 달라진 지표 자동 탐지(p<0.05). '요즘 변한 거', '이상한 거' 질문", PERIOD,
          detect_changes, [19, 20]),
     Tool("get_themes", "큐레이션 테마별 클릭률·클릭 후 구매율·구매 전환율과 관심 vs 구매 사분면", PERIOD, get_themes, [7, 22, 27]),
-    Tool("get_retention", "첫 구매/기존 구매 고객 구성과 재구매 간격", PERIOD, get_retention, [12, 18]),
-    Tool("get_segments", "RFM 규칙 기반 고객군(핵심·충성·휴면 추정 등) 규모와 매출 비중", PERIOD, get_segments, [24, 29]),
+    Tool("get_retention", "첫 구매 고객 vs 기존 구매 고객의 수·매출 비중, 재구매까지 걸리는 기간. "
+         "휴면·이탈 고객 규모는 이 도구가 아니라 get_segments", PERIOD, get_retention, [12, 18]),
+    Tool("get_segments", "RFM 규칙 기반 고객군(핵심·충성·성장 가능·관심 필요·이탈 우려·휴면 추정)의 고객 수와 매출 비중. "
+         "'안 돌아오는 고객', '휴면 고객', '이탈 고객', '단골' 질문", PERIOD, get_segments, [24, 29]),
+    Tool("segment_preference", "고객군별로 잘 팔리는 카테고리(상품매출 비중). 고객군 기준: customer_type(첫 구매/기존 구매), "
+         "grade_at_order(주문 당시 회원 등급), visitor_type(신규/재방문)", PERIOD | {"by": "고객군 기준"}, segment_preference, [15]),
     Tool("design_experiment", "A/B 실험에 필요한 그룹당 표본 수와 기간 계산. 기준 전환율은 기간의 퍼널 구간 전환율",
          PERIOD | {"step": "구간: 1=방문→상품 클릭, 2=상품 클릭→장바구니, 3=장바구니→구매", "lift": "목표 상대 개선폭 (0.05 = 5%)"},
          design_experiment, [30]),

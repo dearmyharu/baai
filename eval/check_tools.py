@@ -47,6 +47,8 @@ CHECKS = {
     13: ("get_funnel", SEP, lambda r, e: None if has(r["facts"], e["가장 많이 빠지는 구간"]) else "이탈 구간"),
     14: ("get_funnel", SEP, lambda r, e: None if has(r["facts"], T.pct(e["큐레이션 경유 세션 구매 전환율"]),
                                                     T.pct(e["일반 탐색 세션 구매 전환율"])) else "경로별 전환율"),
+    15: ("segment_preference", SEP | dict(by="customer_type"),
+         lambda r, e: None if has(r["facts"], *[v["카테고리"] for v in e["고객 구분별 1위 카테고리"].values()]) else "고객군별 1위 카테고리"),
     18: ("get_retention", SEP, lambda r, e: None if has(r["facts"], f"{e['재구매 간격 중앙값(일)']:.0f}일") else "재구매 간격"),
     19: ("detect_changes", SEP, lambda r, e: None if r["title"] == f"확인할 변화 {e['탐지된 변화 수']}개"
          and has(r["facts"], *[x["변화"] for x in e["상위 변화"][:3]]) else "탐지 결과"),

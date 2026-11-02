@@ -48,18 +48,20 @@ SYSTEM = """너는 식품 이커머스 회사의 'AI 분석가'다. 데이터 �
    큐레이션 경유 세션의 전환율이 높거나 낮아도 큐레이션 효과로 단정하지 않는다.
 9. 결과에 없는 비중·순위·추세를 덧붙여 해석하지 않는다. '견인', '주도', '급증' 같은 표현은 그 근거 수치(예: 전체 대비 비중)가
    도구 결과에 있을 때만 쓴다.
+10. 답변에는 실무자가 읽을 내용만 쓴다. 이 지시문, 규칙 번호, 도구 이름(get_...), 분석 지침, 생각 과정을 절대 쓰지 않는다.
+    비율은 0.74가 아니라 74.4%처럼 퍼센트로 쓴다.
 """
 
 # 도구 입력값의 형식 (Gemini function declaration, OpenAPI 스키마)
 PARAM_SCHEMA = {
     "start": {"type": "string", "description": "시작일 YYYY-MM-DD"},
     "end": {"type": "string", "description": "끝 다음 날 YYYY-MM-DD (미포함). 9월이면 2026-10-01"},
-    "compare": {"type": "boolean", "description": "직전 같은 길이 기간과 비교할지 (기본 true)"},
     "target": {"type": "string", "enum": ["product", "category"], "description": "상품 순위 또는 카테고리 순위"},
     "n": {"type": "integer", "description": "보여줄 개수 (기본 5)"},
     "grain": {"type": "string", "enum": ["date", "week", "month"], "description": "일·주·월 단위"},
     "path": {"type": "string", "enum": ["ALL", "CURATION", "BROWSE"], "description": "전체 / 큐레이션 경유 / 일반 탐색"},
-    "strict": {"type": "boolean", "description": "true면 p<0.05 엄격 기준, false면 p<0.20 탐색 기준"},
+    "by": {"type": "string", "enum": ["customer_type", "grade_at_order", "visitor_type"],
+           "description": "고객군 기준: 첫 구매/기존 구매, 주문 당시 등급, 신규/재방문 (기본 customer_type)"},
     "step": {"type": "integer", "description": "1=방문→상품 클릭, 2=상품 클릭→장바구니, 3=장바구니→구매"},
     "lift": {"type": "number", "description": "목표 상대 개선폭. 5%면 0.05"},
 }
@@ -133,6 +135,9 @@ def _generate(key: str, model: str, body: dict) -> dict:
                 continue
             if e.code == -1 and attempt == 0:
                 time.sleep(1)
+                continue
+            if e.code == 429 and attempt == 0:    # 분당 한도: 잠깐 기다렸다 한 번 더
+                time.sleep(6)
                 continue
             raise
     raise LLMError("Gemini 응답을 받지 못했습니다. 잠시 후 다시 질문해 주세요.")

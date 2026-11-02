@@ -387,7 +387,7 @@
   "level": "L2",
   "q": "고객군마다 잘 팔리는 카테고리가 달라?",
   "period": "2026-09",
-  "tool": "get_segments",
+  "tool": "segment_preference",
   "check": "근거 일치: 정답의 핵심 사실(항목·수치)을 포함하고 틀린 수치가 없어야 정답",
   "expected": {
    "고객 구분별 1위 카테고리": {
