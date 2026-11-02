@@ -5,9 +5,9 @@ dashboard 폴더에서:  python eval/run_llm.py   (또는 eval_llm.bat 더블클
 결과: eval/llm_results.md (사람이 읽는 표), eval/llm_results.json
 
 채점 기준
-- 숫자 질문(check_tools.py에 검사가 있는 20문항): 기대 도구를 불렀고, 그 결과가 정답과 같으면 정답
+- 숫자 질문(check_tools.py에 검사가 있는 22문항): 기대 도구를 불렀고, 그 결과가 정답과 같으면 정답
 - 그 밖의 지원 질문: 기대 도구를 불렀으면 정답(답변 내용은 사람이 확인)
-- 미지원·범위 밖 질문(10문항): 지원하지 않거나 데이터에 없다고 밝혔으면 정답
+- 미지원·범위 밖 질문(9문항): 지원하지 않거나 데이터에 없다고 밝혔으면 정답
 - 20번(함정): 위 조건 + 매출이 늘었다는 사실을 답변에서 바로잡아야 정답
 """
 from __future__ import annotations
@@ -29,11 +29,11 @@ from core.data import build_all  # noqa: E402
 from eval.cases import CASES, OUT_OF_SCOPE  # noqa: E402
 from eval.check_tools import CHECKS  # noqa: E402
 
-UNSUPPORTED = {16, 17, 25, 26}
+UNSUPPORTED = {16, 17, 26}
 REFUSE_CUES = ("없습니다", "없어", "지원하지", "제공하지", "제공되지", "존재하지", "확인할 수 없", "알 수 없", "포함되어 있지",
                "포함되지", "수집되지", "어렵습니다", "불가")
 LEAK_RE = re.compile(r"규칙 ?\d+번|지시문|분석 지침|get_[a-z_]+|rank_items|detect_changes|design_experiment|"
-                     r"find_potential_products|segment_preference|explain_revenue_change")
+                     r"find_potential_products|segment_preference|segment_repeat|explain_revenue_change")
 EXPECTED_TOOLS = {12: {"get_retention"}, 27: {"get_themes"},
                   28: {"get_funnel"}, 29: {"get_segments"}, 30: {"design_experiment"}}
 

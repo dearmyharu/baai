@@ -61,6 +61,9 @@ CHECKS = {
     23: ("find_potential_products", SEP,
          lambda r, e: None if has(r["facts"], *[x["product_name"] for x in e["매출 증가율 상위 5(지난달 주문 10건 이상)"][:3]])
          else "뜨는 상품"),
+    25: ("segment_repeat", dict(by="customer_type"),
+         lambda r, e: None if any(has(r["facts"], f"가장 낮은 고객군: {v['가장 낮은 고객군']}") for v in e["기준별"].values())
+         else "가장 낮은 고객군"),
     24: ("get_segments", SEP, lambda r, e: None if has(r["facts"], f"휴면 추정 고객 {e['휴면 추정 고객 수']:,}명") else "휴면 고객 수"),
 }
 

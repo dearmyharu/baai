@@ -109,6 +109,16 @@ def q15(m):
     return {"고객 구분별 1위 카테고리": {r.customer_type: {"카테고리": r.category, "비중": _r(r.비중)} for r in top.itertuples()}}
 
 
+def q25(m):
+    out = {}
+    for by in M.REPEAT_BY:
+        r = M.segment_repeat(m, by=by)
+        ok = r[r["표본 충분"]]
+        out[by] = {"가장 낮은 고객군": ok.iloc[0]["고객군"], "재구매율": _r(ok.iloc[0]["재구매율"]),
+                   "고객군별": {x["고객군"]: _r(x["재구매율"]) for _, x in r.iterrows()}}
+    return {"기준별": out, "주의": "30일 재구매율이며, 낮은 이유는 데이터로 확인된 사실이 아니라 가설로 제시해야 함"}
+
+
 def q18(m):
     g = M.repeat_gaps(m)
     rr = M.repeat_rates(m)
@@ -241,9 +251,8 @@ CASES = [
     dict(id=22, level="L3", q="관심은 많은데 구매로 안 이어지는 테마는?", period="2026-09", tool="get_themes", check=FACTS, expected=q22),
     dict(id=23, level="L3", q="요즘 뜨는 상품은?", period="2026-09 vs 2026-08", tool="product_potential", check=RANK, expected=q23),
     dict(id=24, level="L3", q="안 돌아오는 고객이 얼마나 돼?", period="기준일 2026-09-30", tool="get_segments", check=EXACT, expected=q24),
-    dict(id=25, level="L3", q="재구매가 특히 안 되는 고객군은?", period="-", tool="(미지원)", check=PARTIAL,
-         expected=lambda m: {"상태": "고객군별 30일 재구매율 도구 없음",
-                             "대체 안내": "RFM 고객군 규모·매출 비중, 첫 구매/기존 고객 재구매율"}),
+    dict(id=25, level="L3", q="재구매가 특히 안 되는 고객군은?", period="전체 관측 기간", tool="segment_repeat", check=FACTS,
+         expected=q25),
     dict(id=26, level="L3", q="같이 많이 사는 상품 조합은?", period="-", tool="(미지원)", check=PARTIAL,
          expected=lambda m: {"상태": "동시 구매(장바구니 분석) 도구 없음", "대체 안내": "테마 편성 상품별 성과"}),
     # L4 제안

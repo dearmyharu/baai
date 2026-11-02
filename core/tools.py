@@ -216,7 +216,8 @@ def get_retention(m, start, end):
                    ["재구매 간격은 연속된 두 완료 주문 사이 일수"])
 
 
-SEGMENT_BY = {"customer_type": "첫 구매/기존 구매 고객", "grade_at_order": "주문 당시 회원 등급", "visitor_type": "신규/재방문"}
+SEGMENT_BY = {"customer_type": "첫 구매/기존 구매 고객", "grade_at_order": "주문 당시 회원 등급", "visitor_type": "신규/재방문",
+              "signup_channel": "가입 경로"}
 
 
 def segment_preference(m, start, end, by="customer_type"):
@@ -236,6 +237,27 @@ def segment_preference(m, start, end, by="customer_type"):
     return _result(f"{SEGMENT_BY[by]}별 선호 카테고리", _label(cur), facts,
                    {"kind": "bar", "data": tops.rename(columns={by: "고객군"}), "x": "비중", "y": "고객군", "x_fmt": ".0%"},
                    table, ["비중 = 고객군 상품매출 중 해당 카테고리 비중(행마다 합 100%)", "회원 등급은 현재가 아니라 주문 당시 등급"])
+
+
+def segment_repeat(m, by="customer_type", start=None, end=None):
+    """고객군별 30일 재구매율. 기간 입력은 받지만 쓰지 않는다(전체 관측 기간 기준)."""
+    r = M.segment_repeat(m, by=by)
+    ok = r[r["표본 충분"]]
+    facts = [f"{x['고객군']}: 30일 재구매율 {pct(x['재구매율'])} (대상 {int(x['대상 고객']):,}명)"
+             + ("" if x["표본 충분"] else " - 표본 부족") for _, x in r.iterrows()]
+    if len(ok) >= 2:
+        lo, hi = ok.iloc[0], ok.iloc[-1]
+        rest = ok.iloc[1:]
+        _, p = M.two_prop_test(lo["재구매 고객"], lo["대상 고객"], rest["재구매 고객"].sum(), rest["대상 고객"].sum())
+        sig = "다른 고객군과 유의한 차이" if pd.notna(p) and p < 0.05 else "다른 고객군과 유의한 차이 아님"
+        facts.insert(0, f"가장 낮은 고객군: {lo['고객군']} ({pct(lo['재구매율'])}, p={p:.3f}, {sig}) · "
+                        f"가장 높은 고객군: {hi['고객군']} ({pct(hi['재구매율'])})")
+    label = "첫 주문 당시 회원 등급" if by == "grade_at_order" else SEGMENT_BY[by]
+    return _result(f"{label}별 30일 재구매율", "전체 관측 기간(2026-04-01 ~ 2026-09-30)", facts,
+                   {"kind": "bar", "data": r, "x": "재구매율", "y": "고객군", "x_fmt": ".0%"}, r,
+                   ["관측 기간 첫 완료 주문 후 30일 안에 다시 완료 주문한 고객 비율",
+                    "30일이 관측 기간 안에 끝나는 고객(첫 주문 2026-08-31 이전)만 대상",
+                    "대상 30명 미만 고객군은 순위에서 제외"])
 
 
 def get_segments(m, start, end):
@@ -320,7 +342,12 @@ TOOLS = {t.name: t for t in [
     Tool("get_segments", "RFM 규칙 기반 고객군(핵심·충성·성장 가능·관심 필요·이탈 우려·휴면 추정)의 고객 수와 매출 비중. "
          "'안 돌아오는 고객', '휴면 고객', '이탈 고객', '단골' 질문", PERIOD, get_segments, [24, 29]),
     Tool("segment_preference", "고객군별로 잘 팔리는 카테고리(상품매출 비중). 고객군 기준: customer_type(첫 구매/기존 구매), "
-         "grade_at_order(주문 당시 회원 등급), visitor_type(신규/재방문)", PERIOD | {"by": "고객군 기준"}, segment_preference, [15]),
+         "grade_at_order(주문 당시 회원 등급), visitor_type(신규/재방문), signup_channel(가입 경로)",
+         PERIOD | {"by": "고객군 기준"}, segment_preference, [15]),
+    Tool("segment_repeat", "고객군별 30일 재구매율(첫 주문 후 30일 안에 다시 산 비율)과 가장 낮은·높은 고객군. "
+         "'재구매가 안 되는/잘 되는 고객군' 질문. 고객군 기준: customer_type(첫 구매/기존 구매), "
+         "grade_at_order(첫 주문 당시 회원 등급), signup_channel(가입 경로). 전체 관측 기간 기준이라 기간 입력 불필요",
+         {"by": "고객군 기준"}, segment_repeat, [25]),
     Tool("design_experiment", "A/B 실험에 필요한 그룹당 표본 수와 기간 계산. 기준 전환율은 기간의 퍼널 구간 전환율",
          PERIOD | {"step": "구간: 1=방문→상품 클릭, 2=상품 클릭→장바구니, 3=장바구니→구매", "lift": "목표 상대 개선폭 (0.05 = 5%)"},
          design_experiment, [30]),

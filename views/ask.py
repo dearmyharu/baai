@@ -122,7 +122,7 @@ def answer(question: str, tool: str | None = None, params: dict | None = None):
                 r = llm.ask(KEY, question, lambda name, p: tools.run(m, name, **p), history)
             entry.update(a=r["text"], model=r["model"],
                          results=[c["result"] for c in r["calls"] if "result" in c],
-                         tools=[f"{c['tool']}({', '.join(f'{k}={v}' for k, v in c['params'].items())})" for c in r["calls"]])
+                         tools=[f"{llm.TOOL_KO.get(c['tool'], c['tool'])}({', '.join(f'{k}={v}' for k, v in c['params'].items())})" for c in r["calls"]])
         except Exception as e:  # API 오류·시간 초과 등: 앱이 멈추지 않게 안내만 한다
             msg = str(e) if isinstance(e, llm.LLMError) else f"AI 분석 중 문제가 생겼습니다({type(e).__name__}). 다시 질문해 주세요."
             entry.update(run_direct(tool, params or {}) if tool else {})

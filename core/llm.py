@@ -60,8 +60,8 @@ PARAM_SCHEMA = {
     "n": {"type": "integer", "description": "보여줄 개수 (기본 5)"},
     "grain": {"type": "string", "enum": ["date", "week", "month"], "description": "일·주·월 단위"},
     "path": {"type": "string", "enum": ["ALL", "CURATION", "BROWSE"], "description": "전체 / 큐레이션 경유 / 일반 탐색"},
-    "by": {"type": "string", "enum": ["customer_type", "grade_at_order", "visitor_type"],
-           "description": "고객군 기준: 첫 구매/기존 구매, 주문 당시 등급, 신규/재방문 (기본 customer_type)"},
+    "by": {"type": "string", "enum": ["customer_type", "grade_at_order", "visitor_type", "signup_channel"],
+           "description": "고객군 기준: 첫 구매/기존 구매, 주문 당시 등급, 신규/재방문, 가입 경로 (기본 customer_type)"},
     "step": {"type": "integer", "description": "1=방문→상품 클릭, 2=상품 클릭→장바구니, 3=장바구니→구매"},
     "lift": {"type": "number", "description": "목표 상대 개선폭. 5%면 0.05"},
 }
@@ -81,8 +81,26 @@ def function_declarations() -> list[dict]:
     for t in T.TOOLS.values():
         props = {p: PARAM_SCHEMA[p] for p in t.params}
         out.append({"name": t.name, "description": t.description,
-                    "parameters": {"type": "object", "properties": props, "required": REQUIRED}})
+                    "parameters": {"type": "object", "properties": props, "required": [r for r in REQUIRED if r in props]}})
     return out
+
+
+# 답변에 도구 이름이 새어 나오면 실무자용 이름으로 바꾼다 (시스템 지시 10번의 안전장치)
+TOOL_KO = {
+    "get_kpis": "핵심 지표", "get_coupon_efficiency": "쿠폰 효율 분석", "rank_items": "매출 순위",
+    "explain_revenue_change": "매출 변화 분해", "get_trend": "매출 추이", "get_funnel": "구매 퍼널 분석",
+    "detect_changes": "변화 탐지", "get_themes": "큐레이션 테마 분석", "get_retention": "재구매 분석",
+    "get_segments": "고객군(RFM) 분석", "segment_preference": "고객군별 선호 카테고리", "segment_repeat": "고객군별 재구매율",
+    "design_experiment": "실험 설계", "find_potential_products": "성장 잠재력 상품 분석",
+}
+_TOOL_RE = re.compile(r"`?\b(" + "|".join(sorted(TOOL_KO, key=len, reverse=True)) + r")\b(?:\(\))?`?")
+_RULE_RE = re.compile(r"\s*\(?(?:규칙|지시문?) ?\d+번(?:에 따라|에 의해)?\)?,?")
+
+
+def clean(text: str) -> str:
+    """도구 이름·규칙 번호 같은 내부 표현을 지운다."""
+    text = _TOOL_RE.sub(lambda mm: TOOL_KO[mm.group(1)], text)
+    return _RULE_RE.sub("", text).strip()
 
 
 # ---------------------------------------------------------------------------
@@ -290,7 +308,7 @@ def ask(key: str, question: str, run_tool: Callable[[str, dict], dict], history:
         fcs = [p["functionCall"] for p in parts if "functionCall" in p]
         if not fcs:
             text = "".join(p.get("text", "") for p in parts if not p.get("thought")).strip()
-            return {"text": text, "calls": calls, "model": model}
+            return {"text": clean(text), "calls": calls, "model": model}
         body["contents"].append(content)            # 모델 응답은 그대로 돌려준다(생각 서명 보존)
         responses = []
         for fc in fcs:

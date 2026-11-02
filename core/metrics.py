@@ -432,10 +432,13 @@ def product_performance(m: dict, start, end, category: str | None = None) -> pd.
 
 
 def segment_category_mix(m: dict, start, end, by: str = "customer_type") -> pd.DataFrame:
-    """고객 구분(by)별 카테고리 상품매출 비중. by = customer_type | grade_at_order | visitor_type."""
+    """고객 구분(by)별 카테고리 상품매출 비중. by = customer_type | grade_at_order | visitor_type | signup_channel."""
     it = completed_items(m, start, end).copy()
-    if by == "grade_at_order":
-        it = it.merge(m["orders"][["order_id", "grade_at_order"]], on="order_id", how="left")
+    if by in ("grade_at_order", "signup_channel"):
+        it = it.merge(m["orders"][["order_id", "customer_id", "grade_at_order"]], on="order_id", how="left",
+                      suffixes=("_x", ""))
+    if by == "signup_channel":
+        it["signup_channel"] = it["customer_id"].map(m["raw"]["customer"].set_index("customer_id")["signup_channel"])
     mix = it.groupby([by, "category"])["net_sales"].sum().reset_index()
     mix["비중"] = mix["net_sales"] / mix.groupby(by)["net_sales"].transform("sum")
     return mix
@@ -612,6 +615,32 @@ def repeat_rates(m: dict, windows=(7, 30, 60)) -> pd.DataFrame:
             rows.append({"첫 주문 월": mon.strftime("%Y-%m"), "구분": grp_, "기준": f"{win}일 재구매율",
                          "대상 고객": len(g), "재구매율": (g["gap_days"] <= win).mean()})
     return pd.DataFrame(rows)
+
+
+REPEAT_BY = ("customer_type", "grade_at_order", "signup_channel")
+
+
+def segment_repeat(m: dict, by: str = "customer_type", win: int = 30, min_n: int = 30) -> pd.DataFrame:
+    """고객군별 N일 재구매율: 관측 기간 첫 완료 주문 후 N일 안에 다시 완료 주문했는가.
+    N일이 관측 기간 안에 끝나는 고객만 대상. by = customer_type | grade_at_order(첫 주문 당시 등급) | signup_channel.
+    열 = 고객군, 대상 고객, 재구매 고객, 재구매율, 표본 충분(대상 min_n명 이상). 재구매율 낮은 순."""
+    if by not in REPEAT_BY:
+        raise ValueError(f"재구매율은 {', '.join(REPEAT_BY)} 기준으로만 나눌 수 있습니다")
+    seq = _order_sequence(m)
+    firsts = seq.groupby("customer_id").head(1).copy()
+    firsts = firsts[firsts["order_time"] + pd.Timedelta(days=win) <= observation_end()]
+    if by == "customer_type":
+        firsts[by] = np.where(firsts["is_first_purchase"].eq(1), "생애 첫 구매 고객", "기존 구매 고객")
+    elif by == "grade_at_order":
+        firsts[by] = m["orders"].loc[firsts.index, "grade_at_order"]
+    else:
+        firsts[by] = firsts["customer_id"].map(m["raw"]["customer"].set_index("customer_id")["signup_channel"])
+    firsts["재구매"] = firsts["gap_days"] <= win
+    out = firsts.groupby(by).agg(대상_고객=("customer_id", "size"), 재구매_고객=("재구매", "sum")).reset_index()
+    out.columns = ["고객군", "대상 고객", "재구매 고객"]
+    out["재구매율"] = out["재구매 고객"] / out["대상 고객"]
+    out["표본 충분"] = out["대상 고객"] >= min_n
+    return out.sort_values("재구매율").reset_index(drop=True)
 
 
 GAP_BINS = [0, 3, 7, 14, 21, 30, 45, 60, 90, 200]
