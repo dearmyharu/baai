@@ -137,6 +137,7 @@ def _generate(key: str, model: str, body: dict) -> dict:
 
 
 _MODEL_CACHE: dict[str, str] = {}
+_UNAVAILABLE: dict[str, set] = {}   # 목록에는 있지만 이 키로는 거절된 모델 (예: 신규 사용자에게 종료된 모델)
 
 
 def _setting(name: str) -> str:
@@ -165,22 +166,44 @@ def _version(n: str) -> float | None:
     return float(v[0]) if v else None
 
 
+def candidates(key: str) -> list[str]:
+    """자동 선택 후보를 '가장 낮은(가벼운) 순'으로: 버전 낮은 순, 같은 버전이면 flash-lite 먼저. 거절된 모델은 뺀다."""
+    names = text_models(key)
+    pool = [n for n in names if "flash" in n and _version(n) is not None]
+    if not pool:
+        pool = [n for n in names if _version(n) is not None] or names
+    gone = _UNAVAILABLE.get(key, set())
+    return sorted((n for n in pool if n not in gone),
+                  key=lambda n: (_version(n) or 99, "lite" not in n, "latest" in n, len(n)))
+
+
 def pick_model(key: str) -> str:
-    """GEMINI_MODEL이 있으면 그 모델. 없으면 이 키로 쓸 수 있는 가장 낮은(가벼운) Flash 계열 모델:
-    버전이 가장 낮은 것, 같은 버전이면 flash-lite를 먼저."""
+    """GEMINI_MODEL이 있으면 그 모델. 없으면 이 키로 실제로 쓸 수 있는 가장 낮은(가벼운) Flash 계열 모델."""
     fixed = _setting("GEMINI_MODEL")
     if fixed:
         return fixed
     if key in _MODEL_CACHE:
         return _MODEL_CACHE[key]
-    names = text_models(key)
-    pool = [n for n in names if "flash" in n and _version(n) is not None]
-    if not pool:
-        pool = [n for n in names if _version(n) is not None] or names
-    if not pool:
+    c = candidates(key)
+    if not c:
         raise LLMError("이 키로 쓸 수 있는 Gemini 모델을 찾지 못했습니다.")
-    _MODEL_CACHE[key] = min(pool, key=lambda n: (_version(n) or 99, "lite" not in n, "latest" in n, len(n)))
-    return _MODEL_CACHE[key]
+    _MODEL_CACHE[key] = c[0]
+    return c[0]
+
+
+def _next_model(key: str, failed: str, detail: str) -> str | None:
+    """거절된 모델을 기록하고 다음 후보를 고른다. 오류 문구에 추천 모델이 있으면 그것을 먼저."""
+    _UNAVAILABLE.setdefault(key, set()).add(failed)
+    _MODEL_CACHE.pop(key, None)
+    sug = re.search(r"use (?:models/)?(gemini-[\w.\-]+)", detail)
+    sug = sug.group(1).rstrip(".-") if sug else None
+    nxt = sug if sug and sug not in _UNAVAILABLE[key] else None
+    if not nxt:
+        c = candidates(key)
+        nxt = c[0] if c else None
+    if nxt:
+        _MODEL_CACHE[key] = nxt
+    return nxt
 
 
 # ---------------------------------------------------------------------------
@@ -225,9 +248,32 @@ def ask(key: str, question: str, run_tool: Callable[[str, dict], dict], history:
     th = _thinking(model)
     if th:
         body["generationConfig"]["thinkingConfig"] = th
+    fixed = bool(_setting("GEMINI_MODEL"))
+
+    def generate() -> dict:
+        nonlocal model
+        for _ in range(4):
+            try:
+                return _generate(key, model, body)
+            except LLMError as e:
+                if e.code != 404:
+                    raise
+                if fixed:
+                    raise LLMError(f"Secrets의 GEMINI_MODEL '{model}'은(는) 이 키로 쓸 수 없습니다. "
+                                   "AI 모델 칸의 목록에서 다른 모델로 바꾸거나 그 줄을 지워 자동 선택을 쓰세요.", 404) from e
+                nxt = _next_model(key, model, e.detail)
+                if not nxt:
+                    raise LLMError("이 키로 쓸 수 있는 Gemini 모델을 찾지 못했습니다.", 404) from e
+                model = nxt
+                gc = body["generationConfig"]
+                gc.pop("thinkingConfig", None)
+                if _thinking(model):
+                    gc["thinkingConfig"] = _thinking(model)
+        raise LLMError("쓸 수 있는 Gemini 모델을 찾지 못했습니다. 잠시 후 다시 시도해 주세요.")
+
     calls = []
     for _ in range(MAX_STEPS):
-        d = _generate(key, model, body)
+        d = generate()
         cands = d.get("candidates") or []
         if not cands:
             reason = (d.get("promptFeedback") or {}).get("blockReason", "응답 없음")
