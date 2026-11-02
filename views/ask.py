@@ -1,7 +1,7 @@
 """⓪ AI 분석가: 궁금한 것을 물으면 데이터를 찾아 차트로 보여준다.
 
-지금은 LLM 연결 전 단계라, 예시 질문을 누르면 정해진 도구(core/tools.py)를 바로 실행한다.
-LLM이 연결되면 자유 질문 → 도구 선택·기간 해석 → 같은 도구 실행 → 결과 설명 순서로 바뀐다.
+GEMINI_API_KEY가 있으면: 질문 → Gemini가 도구(core/tools.py)와 기간을 고름 → 도구 실행 → Gemini가 결과를 근거로 설명.
+키가 없으면: 예시 질문 버튼만 정해진 도구를 바로 실행한다.
 """
 import os
 
@@ -9,7 +9,7 @@ import altair as alt
 import pandas as pd
 import streamlit as st
 
-from core import tools, ui
+from core import llm, tools, ui
 
 m = ui.get_mart()
 
@@ -18,21 +18,18 @@ st.caption("궁금한 것을 물어보면 데이터를 찾아 숫자와 차트�
 
 
 def llm_key() -> str | None:
-    for k in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY"):
-        try:
-            v = st.secrets.get(k)
-        except Exception:
-            v = None
-        v = v or os.getenv(k)
-        if v:
-            return k
-    return None
+    try:
+        v = st.secrets.get("GEMINI_API_KEY")
+    except Exception:
+        v = None
+    v = (v or os.getenv("GEMINI_API_KEY") or "").strip()
+    return v if v and "붙여넣기" not in v else None
 
 
 KEY = llm_key()
 if not KEY:
     st.info("AI 모델이 아직 연결되지 않았습니다. 지금은 아래 **예시 질문**에 답할 수 있어요. "
-            "연결되면 자유롭게 질문할 수 있습니다.", icon=":material/info:")
+            "Secrets에 GEMINI_API_KEY를 넣으면 자유롭게 질문할 수 있습니다.", icon=":material/info:")
 
 if "ask_log" not in st.session_state:
     st.session_state.ask_log = []
@@ -91,17 +88,31 @@ def show_result(res: dict):
         ui.note(n)
 
 
+def run_direct(tool: str, params: dict) -> dict:
+    """LLM 없이 정해진 도구를 바로 실행 (키가 없을 때 예시 질문용)."""
+    try:
+        return {"a": "", "results": [tools.run(m, tool, **params)], "tools": [tool]}
+    except Exception as e:  # 기간이 데이터 밖이거나 계산 불가
+        return {"a": f"이 질문은 지금 데이터로 답하기 어렵습니다: {e}"}
+
+
 def answer(question: str, tool: str | None = None, params: dict | None = None):
     entry = {"q": question}
-    if tool is None:
-        entry["text"] = ("AI 모델이 연결되면 이런 자유 질문에도 답할 수 있어요. 지금은 아래 예시 질문 중 비슷한 것을 골라 주세요."
-                         if not KEY else "AI 모델 연결 작업이 아직 끝나지 않았습니다. 예시 질문을 이용해 주세요.")
-    else:
+    if KEY:
+        history = [{"q": e["q"], "a": e.get("a", "")} for e in log]
         try:
-            entry["result"] = tools.run(m, tool, **(params or {}))
-            entry["tool"] = tool
-        except Exception as e:  # 기간이 데이터 밖이거나 계산 불가
-            entry["text"] = f"이 질문은 지금 데이터로 답하기 어렵습니다: {e}"
+            with st.spinner("데이터를 찾아 분석하는 중..."):
+                r = llm.ask(KEY, question, lambda name, p: tools.run(m, name, **p), history)
+            entry.update(a=r["text"], model=r["model"],
+                         results=[c["result"] for c in r["calls"] if "result" in c],
+                         tools=[f"{c['tool']}({', '.join(f'{k}={v}' for k, v in c['params'].items())})" for c in r["calls"]])
+        except llm.LLMError as e:
+            entry.update(run_direct(tool, params or {}) if tool else {})
+            entry["a"] = f"⚠️ {e}" + (" 대신 정해진 분석 결과를 보여 드립니다." if tool else "")
+    elif tool is None:
+        entry["a"] = "AI 모델이 연결되면 이런 자유 질문에도 답할 수 있어요. 지금은 아래 예시 질문 중 비슷한 것을 골라 주세요."
+    else:
+        entry.update(run_direct(tool, params or {}))
     log.append(entry)
 
 
@@ -112,15 +123,17 @@ for e in log:
     with st.chat_message("user"):
         st.markdown(e["q"])
     with st.chat_message("assistant"):
-        if "result" in e:
-            show_result(e["result"])
-        else:
-            st.markdown(e["text"])
+        if e.get("a"):
+            st.markdown(e["a"])
+        for res in e.get("results", []):
+            show_result(res)
+        if e.get("tools") and e.get("model"):
+            st.caption(f"사용한 분석: {' · '.join(e['tools'])} · 모델 {e['model']}")
 
 q = st.chat_input("예: 이번 달 매출 제일 많이 나온 상품은?")
 if q:
     hit = next((ex for ex in tools.EXAMPLES if ex[0].replace(" ", "") == q.replace(" ", "")), None)
-    answer(q, *(hit[1:] if hit else (None, None)))
+    answer(q, *(hit[1:] if hit else (None, None)))   # 키가 있으면 어떤 질문이든 Gemini가 답한다
     st.rerun()
 
 st.markdown("**예시 질문**")

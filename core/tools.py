@@ -243,6 +243,25 @@ def find_potential_products(m, start, end, n=5):
                    ["규칙 기반 탐색 점수이며 미래 매출 예측이 아님"])
 
 
+STEP_NAMES = {1: "방문 → 상품 클릭", 2: "상품 클릭 → 장바구니", 3: "장바구니 → 구매"}
+
+
+def design_experiment(m, start, end, step=3, lift=0.05):
+    cur = _period(start, end)
+    s = M.in_period(m["sessions"], "start", *cur)
+    n, d, p0 = M.step_rate(s, "ALL", int(step))
+    per = M.sample_size_per_group(p0, float(lift))
+    daily = d / max((cur[1] - cur[0]).days, 1)
+    days = 2 * per / daily if daily else float("nan")
+    facts = [f"기준 전환율({STEP_NAMES[int(step)]}): {pct(p0)} ({d:,}세션 중 {n:,}세션)",
+             f"목표: 상대 {lift*100:.0f}% 개선 → {pct(p0 * (1 + lift))} (유의수준 0.05, 검정력 0.8)",
+             f"그룹당 필요 세션 {per:,}개, 두 그룹 합계 {2*per:,}개",
+             f"하루 {STEP_NAMES[int(step)].split(' → ')[0]} 세션 약 {daily:,.0f}개 → 약 {days:,.0f}일 필요"]
+    return _result("실험 표본·기간 계산", _label(cur), facts, None, None,
+                   ["기간은 이 단계에 도달한 세션을 두 그룹에 반씩 나눈다고 가정",
+                    "개선폭을 작게 잡을수록 필요한 표본이 크게 늘어남"])
+
+
 # ---------------------------------------------------------------------------
 # 도구 목록 (LLM에 넘길 설명)
 # ---------------------------------------------------------------------------
@@ -273,6 +292,9 @@ TOOLS = {t.name: t for t in [
     Tool("get_themes", "큐레이션 테마별 클릭률·클릭 후 구매율·구매 전환율과 관심 vs 구매 사분면", PERIOD, get_themes, [7, 22, 27]),
     Tool("get_retention", "첫 구매/기존 구매 고객 구성과 재구매 간격", PERIOD, get_retention, [12, 18]),
     Tool("get_segments", "RFM 규칙 기반 고객군(핵심·충성·휴면 추정 등) 규모와 매출 비중", PERIOD, get_segments, [24, 29]),
+    Tool("design_experiment", "A/B 실험에 필요한 그룹당 표본 수와 기간 계산. 기준 전환율은 기간의 퍼널 구간 전환율",
+         PERIOD | {"step": "구간: 1=방문→상품 클릭, 2=상품 클릭→장바구니, 3=장바구니→구매", "lift": "목표 상대 개선폭 (0.05 = 5%)"},
+         design_experiment, [30]),
     Tool("find_potential_products", "매출은 낮지만 관심·구매 의향·전환·성장 지표가 좋은 상품(키울 후보)과 뜨는 상품",
          PERIOD | {"n": "개수"}, find_potential_products, [21, 23]),
 ]}
