@@ -97,6 +97,12 @@ _TOOL_RE = re.compile(r"`?\b(" + "|".join(sorted(TOOL_KO, key=len, reverse=True)
 _RULE_RE = re.compile(r"\s*\(?(?:규칙|지시문?) ?\d+번(?:에 따라|에 의해)?\)?,?")
 
 
+# 도구 없이 나온 숫자(금액·비율·건수·인원) 탐지: 날짜는 제외
+_NUM_RE = re.compile(r"\d[\d,]*(?:\.\d+)?\s*(?:원|%|건|명|배|개)")
+FORCE_TOOL_MSG = ("방금 답변의 숫자는 데이터 도구 결과가 아닙니다. 지어낸 숫자는 쓰면 안 됩니다. "
+                  "알맞은 도구를 호출해 결과를 받은 뒤 그 숫자로만 다시 답하세요.")
+
+
 def clean(text: str) -> str:
     """도구 이름·규칙 번호 같은 내부 표현을 지운다."""
     text = _TOOL_RE.sub(lambda mm: TOOL_KO[mm.group(1)], text)
@@ -296,8 +302,8 @@ def ask(key: str, question: str, run_tool: Callable[[str, dict], dict], history:
                     gc["thinkingConfig"] = _thinking(model)
         raise LLMError("쓸 수 있는 Gemini 모델을 찾지 못했습니다. 잠시 후 다시 시도해 주세요.")
 
-    calls = []
-    for _ in range(MAX_STEPS):
+    calls, forced = [], False
+    for _ in range(MAX_STEPS + 1):
         d = generate()
         cands = d.get("candidates") or []
         if not cands:
@@ -308,7 +314,17 @@ def ask(key: str, question: str, run_tool: Callable[[str, dict], dict], history:
         fcs = [p["functionCall"] for p in parts if "functionCall" in p]
         if not fcs:
             text = "".join(p.get("text", "") for p in parts if not p.get("thought")).strip()
+            if not calls and not forced and _NUM_RE.search(text):
+                # 도구를 부르지 않고 숫자를 말함 → 지어낸 숫자. 도구 호출을 강제해 한 번 더 묻는다.
+                forced = True
+                body["contents"].append(content)
+                body["contents"].append({"role": "user", "parts": [{"text": FORCE_TOOL_MSG}]})
+                body["toolConfig"]["functionCallingConfig"]["mode"] = "ANY"
+                continue
+            if not calls and _NUM_RE.search(text):
+                text = "데이터 도구로 확인한 숫자가 없어 답할 수 없습니다. 질문을 조금 더 구체적으로 해 주세요."
             return {"text": clean(text), "calls": calls, "model": model}
+        body["toolConfig"]["functionCallingConfig"]["mode"] = "AUTO"
         body["contents"].append(content)            # 모델 응답은 그대로 돌려준다(생각 서명 보존)
         responses = []
         for fc in fcs:
