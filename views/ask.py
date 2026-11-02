@@ -3,8 +3,6 @@
 GEMINI_API_KEY가 있으면: 질문 → Gemini가 도구(core/tools.py)와 기간을 고름 → 도구 실행 → Gemini가 결과를 근거로 설명.
 키가 없으면: 예시 질문 버튼만 정해진 도구를 바로 실행한다.
 """
-import os
-
 import altair as alt
 import pandas as pd
 import streamlit as st
@@ -17,16 +15,7 @@ st.title("AI 분석가")
 st.caption("궁금한 것을 물어보면 데이터를 찾아 숫자와 차트로 보여 드립니다. 데이터 기간: 2026-04-01 ~ 2026-09-30")
 
 
-def llm_key() -> str | None:
-    try:
-        v = st.secrets.get("GEMINI_API_KEY")
-    except Exception:
-        v = None
-    v = (v or os.getenv("GEMINI_API_KEY") or "").strip()
-    return v if v and "붙여넣기" not in v else None
-
-
-KEY = llm_key()
+KEY = llm.api_key()
 if not KEY:
     st.info("AI 모델이 아직 연결되지 않았습니다. 지금은 아래 **예시 질문**에 답할 수 있어요. "
             "Secrets에 GEMINI_API_KEY를 넣으면 자유롭게 질문할 수 있습니다.", icon=":material/info:")

@@ -4,7 +4,7 @@ import math
 import pandas as pd
 import streamlit as st
 
-from core import store, ui
+from core import llm, store, tools, ui
 from core.metrics import sample_size_per_group, two_prop_test
 
 m = ui.get_mart()
@@ -78,6 +78,69 @@ with st.container(border=True):
     st.caption(f"정의: {obs.get('definition', '–')} · 표본 n={obs.get('n_current', '–')}"
                + (f" · p={obs['p_value']:.3f}" if obs.get("p_value") is not None else ""))
 
+# ---------------- AI 초안 ----------------
+AKEY = llm.api_key()
+dkey = f"ai_draft_{pid}"
+with st.container(border=True):
+    a1, a2 = st.columns([3, 1])
+    a1.markdown("**AI 초안** · AI가 데이터 도구로 근거를 확인한 뒤 가설·전략(ICE)·실험 설계 초안을 씁니다.")
+    if not AKEY:
+        a1.caption("Secrets에 GEMINI_API_KEY를 넣으면 쓸 수 있습니다.")
+    elif a2.button("AI 초안 만들기", key=f"mk_{pid}", icon=":material/auto_awesome:", use_container_width=True):
+        try:
+            with st.spinner("근거 데이터를 확인하고 초안을 쓰는 중... (20~40초)"):
+                st.session_state[dkey] = llm.draft(AKEY, P, lambda name, p_: tools.run(m, name, **p_))
+        except Exception as e:  # API 오류·시간 초과: 화면은 계속
+            st.error(str(e) if isinstance(e, llm.LLMError) else f"AI 초안을 만들지 못했습니다({type(e).__name__}). 다시 시도해 주세요.")
+    if P.get("ai_draft"):
+        a1.caption(f"마지막 반영: {P['ai_draft'].get('at', '')} · 모델 {P['ai_draft'].get('model', '')}")
+
+    D = st.session_state.get(dkey)
+    if D:
+        st.markdown(D["summary"])
+        if D["warnings"]:
+            st.warning(f"근거 데이터에서 찾지 못한 숫자가 {len(D['warnings'])}개 있습니다: {', '.join(D['warnings'])}. "
+                       "해당 칸에 '⚠️ 확인 필요'를 붙였으니 반영 전에 확인하세요.")
+        with st.expander(f"AI가 확인한 근거 데이터 ({sum('result' in c for c in D['calls'])}개)"):
+            for c in D["calls"]:
+                if "result" in c:
+                    st.markdown(f"**{c['result']['title']}** · {c['result']['period']}")
+                    for f in c["result"]["facts"]:
+                        st.markdown(f"- {f}")
+        st.markdown("**가설 초안**")
+        st.dataframe(pd.DataFrame(D["hypotheses"]).drop(columns=["작성"]), hide_index=True, width="stretch")
+        st.markdown("**전략 초안 (ICE 순)**")
+        st.dataframe(pd.DataFrame(D["strategies"])[["선택", "개선 액션", "연결 가설", "기대 영향", "Impact", "Confidence",
+                                                    "Ease", "ICE", "ICE 근거"]], hide_index=True, width="stretch")
+        e = D["experiment"]
+        st.markdown(f"**실험 초안** · {e['name']}  \n실험군(B): {e['treatment']}  \n대조군(A): {e['control']}  \n"
+                    f"주요 지표: {e['metric']} · 대상: {e['target']} · 배정: {e['unit']} · 최소 검출 효과 {e['mde']:.0f}%  \n"
+                    f"중단 기준: {e['stop']}")
+        b1, b2, _ = st.columns([1, 1, 3])
+        if b1.button("초안 반영", key=f"ap_{pid}", type="primary", icon=":material/check:"):
+            keep_h = [h for h in (P.get("hypotheses") or []) if str(h.get("가설", "")).strip()
+                      and (h.get("작성") == "분석가" or (h.get("작성") == "템플릿 초안" and h.get("채택")))]
+            keep_s = [x for x in (P.get("strategies") or []) if str(x.get("개선 액션", "")).strip()]
+            for x in keep_s:
+                x["선택"] = False
+            old = P.get("experiment") or {}
+            exp = {**{k: v for k, v in old.items() if v not in ("", None, [])},
+                   **{k: v for k, v in e.items() if not old.get(k)}}
+            store.update_problem(
+                pid, hypotheses=keep_h + D["hypotheses"], strategies=D["strategies"] + keep_s, experiment=exp,
+                ai_draft={"at": pd.Timestamp.now(tz="Asia/Seoul").strftime("%Y-%m-%d %H:%M"), "model": D["model"],
+                          "summary": D["summary"], "evidence": [c["result"]["title"] for c in D["calls"] if "result" in c]},
+                status="가설 검토" if P["status"] in ("문제 후보", "문제 정의") else P["status"])
+            for k in (f"hy_{pid}", f"stg_{pid}", dkey):
+                st.session_state.pop(k, None)
+            st.toast("AI 초안을 가설·전략·실험 설계에 반영했습니다. 각 탭에서 검토하고 고쳐 주세요.")
+            st.rerun()
+        if b2.button("버리기", key=f"dc_{pid}"):
+            st.session_state.pop(dkey, None)
+            st.rerun()
+        ui.note("AI 초안은 출발점입니다. 숫자는 데이터 도구 결과에서만 가져오도록 했지만, 원인·전략은 검증 전 가설입니다. "
+                "반영하면 이전 AI 초안과 채택하지 않은 템플릿 초안 대신 새 AI 초안이 들어가고, 분석가가 쓴 가설과 기존 전략은 유지됩니다. 실험 설계는 비어 있는 칸만 채웁니다.")
+
 tabs = st.tabs(["1. 문제 정의", "2. 가설 검토", "3. 전략 비교", "4. 실험 설계", "5. 결과 검토"])
 
 # ---------------- 1. 문제 정의 ----------------
@@ -131,7 +194,7 @@ with tabs[1]:
         tpl = TEMPLATES.get(obs.get("kind"), TEMPLATES["funnel"])
         hyps = [{"채택": False, "가설": h, "근거": "", "반대 근거": "", "추가 확인": chk, "작성": "템플릿 초안"} for h, chk in tpl]
     st.caption("템플릿 초안은 출발점일 뿐입니다. 근거와 반대 근거를 데이터로 채운 뒤 검토할 가설을 '채택'하세요. "
-               "(AI 챗봇이 연결되면 'AI 초안'이 이 자리에 들어갑니다.)")
+               "위의 'AI 초안 만들기'로 데이터 근거가 붙은 초안을 받을 수도 있습니다.")
     ed = st.data_editor(pd.DataFrame(hyps), num_rows="dynamic", width="stretch", key=f"hy_{pid}",
                         column_config={"채택": st.column_config.CheckboxColumn(width="small"),
                                        "가설": st.column_config.TextColumn(width="large"),
@@ -280,6 +343,10 @@ def to_md(p):
              "## 문제 정의", dfn.get("statement", "(미작성)"), f"- 대상: {dfn.get('target', '')}",
              f"- 기간: {dfn.get('period', '')}", f"- 지표: {dfn.get('metric', '')}", f"- 영향: {dfn.get('impact', '')}", "",
              "## 가설"]
+    if p.get("ai_draft"):
+        a = p["ai_draft"]
+        lines[-1:-1] = ["## AI 근거 요약", a.get("summary", ""), f"- 확인한 데이터: {', '.join(a.get('evidence', []))} "
+                        f"({a.get('at', '')}, {a.get('model', '')})", ""]
     for h in p.get("hypotheses") or []:
         lines.append(f"- [{'x' if h.get('채택') else ' '}] {h.get('가설', '')} (근거: {h.get('근거', '')} / 반대 근거: "
                      f"{h.get('반대 근거', '')} / 추가 확인: {h.get('추가 확인', '')}) _{h.get('작성', '')}_")

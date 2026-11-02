@@ -41,7 +41,7 @@ SYSTEM = """너는 식품 이커머스 회사의 'AI 분석가'다. 데이터 �
 5. 데이터에 없는 것: 광고비·광고 유입·ROAS, 결제 페이지 진입, 상세페이지 체류 시간, 경쟁사 가격, 비회원 방문, 매출 예측.
    이런 질문은 도구를 부르지 말고 '이 데이터에는 없다'고 밝힌 뒤 대신 볼 수 있는 지표를 제안한다
    (ROAS → 쿠폰 효율, 결제 이탈 → 장바구니→구매 전환율, 체류 시간 → 클릭 후 구매율, 예측 → 최근 추이).
-6. 아직 도구가 없는 분석: 연령·성별·지역별 비교, 요일×시간대 주문, 고객군별 재구매율, 함께 사는 상품 조합.
+6. 아직 도구가 없는 분석: 연령·성별·지역별 비교, 요일×시간대 주문, 함께 사는 상품 조합.
    '아직 지원하지 않는다'고 밝히고 가능한 대체 분석을 안내한다. 숫자를 지어내지 않는다.
 7. 화면에 도구 결과(사실 목록·차트·표)가 함께 표시되므로, 답변은 핵심 해석 2~5문장으로 짧게 쓴다. 한국어, 존댓말.
 8. 쿠폰 효율은 '쿠폰 때문에 생긴 매출'이 아니라 '쿠폰을 쓴 주문의 매출'이다. 잠재력 점수는 예측이 아니다.
@@ -183,6 +183,12 @@ def _setting(name: str) -> str:
     return (os.getenv(name) or "").strip()
 
 
+def api_key() -> str | None:
+    """GEMINI_API_KEY (Secrets 또는 환경변수). 예시 문구 그대로면 없는 것으로 본다."""
+    v = _setting("GEMINI_API_KEY")
+    return v if v and "붙여넣기" not in v else None
+
+
 def text_models(key: str) -> list[str]:
     """이 키로 쓸 수 있는 텍스트 생성 모델 (실험·미리보기 제외)."""
     d = _call(key, "models?pageSize=200")
@@ -260,56 +266,59 @@ def summarize(res: dict, rows: int = 12) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# 질문 하나에 답하기
+# 공통: 모델 호출(거절 시 다음 모델로) · 도구 호출 반복
 # ---------------------------------------------------------------------------
-def ask(key: str, question: str, run_tool: Callable[[str, dict], dict], history: list[dict] | None = None,
-        model: str | None = None) -> dict:
-    """반환: {"text": 답변, "calls": [{"tool", "params", "result" 또는 "error"}], "model": 모델명}"""
-    model = model or pick_model(key)
-    contents = []
-    for h in (history or [])[-HISTORY_TURNS:]:
-        contents.append({"role": "user", "parts": [{"text": h["q"]}]})
-        if h.get("a"):
-            contents.append({"role": "model", "parts": [{"text": h["a"]}]})
-    contents.append({"role": "user", "parts": [{"text": question}]})
-    body = {"systemInstruction": {"parts": [{"text": SYSTEM}]}, "contents": contents,
-            "tools": [{"functionDeclarations": function_declarations()}],
-            "toolConfig": {"functionCallingConfig": {"mode": "AUTO"}},
+def _new_body(system: str, contents: list[dict], model: str, tools: bool = True) -> dict:
+    body = {"systemInstruction": {"parts": [{"text": system}]}, "contents": contents,
             "generationConfig": {"temperature": 0}}
-    th = _thinking(model)
-    if th:
-        body["generationConfig"]["thinkingConfig"] = th
+    if tools:
+        body["tools"] = [{"functionDeclarations": function_declarations()}]
+        body["toolConfig"] = {"functionCallingConfig": {"mode": "AUTO"}}
+    if _thinking(model):
+        body["generationConfig"]["thinkingConfig"] = _thinking(model)
+    return body
+
+
+def _generate_any(key: str, model: str, body: dict) -> tuple[dict, str]:
+    """generateContent. 모델이 거절(404)되면 다음 후보로 바꿔 다시 부른다. (응답, 실제 쓴 모델)"""
     fixed = bool(_setting("GEMINI_MODEL"))
+    for _ in range(4):
+        try:
+            return _generate(key, model, body), model
+        except LLMError as e:
+            if e.code != 404:
+                raise
+            if fixed:
+                raise LLMError(f"Secrets의 GEMINI_MODEL '{model}'은(는) 이 키로 쓸 수 없습니다. "
+                               "AI 모델 칸의 목록에서 다른 모델로 바꾸거나 그 줄을 지워 자동 선택을 쓰세요.", 404) from e
+            nxt = _next_model(key, model, e.detail)
+            if not nxt:
+                raise LLMError("이 키로 쓸 수 있는 Gemini 모델을 찾지 못했습니다.", 404) from e
+            model = nxt
+            gc = body["generationConfig"]
+            gc.pop("thinkingConfig", None)
+            if _thinking(model):
+                gc["thinkingConfig"] = _thinking(model)
+    raise LLMError("쓸 수 있는 Gemini 모델을 찾지 못했습니다. 잠시 후 다시 시도해 주세요.")
 
-    def generate() -> dict:
-        nonlocal model
-        for _ in range(4):
-            try:
-                return _generate(key, model, body)
-            except LLMError as e:
-                if e.code != 404:
-                    raise
-                if fixed:
-                    raise LLMError(f"Secrets의 GEMINI_MODEL '{model}'은(는) 이 키로 쓸 수 없습니다. "
-                                   "AI 모델 칸의 목록에서 다른 모델로 바꾸거나 그 줄을 지워 자동 선택을 쓰세요.", 404) from e
-                nxt = _next_model(key, model, e.detail)
-                if not nxt:
-                    raise LLMError("이 키로 쓸 수 있는 Gemini 모델을 찾지 못했습니다.", 404) from e
-                model = nxt
-                gc = body["generationConfig"]
-                gc.pop("thinkingConfig", None)
-                if _thinking(model):
-                    gc["thinkingConfig"] = _thinking(model)
-        raise LLMError("쓸 수 있는 Gemini 모델을 찾지 못했습니다. 잠시 후 다시 시도해 주세요.")
 
+def _first(d: dict) -> list[dict]:
+    cands = d.get("candidates") or []
+    if not cands:
+        reason = (d.get("promptFeedback") or {}).get("blockReason", "응답 없음")
+        raise LLMError(f"Gemini가 답하지 않았습니다 ({reason}).")
+    return cands[0].get("content") or {"role": "model", "parts": []}
+
+
+def _tool_loop(key: str, system: str, contents: list[dict], run_tool: Callable[[str, dict], dict],
+               model: str, steps: int = MAX_STEPS) -> dict:
+    """모델이 도구를 부르면 실행해 결과를 돌려주기를 반복. 도구 없이 숫자를 말하면 도구 호출을 강제해 다시 묻는다.
+    반환: {"text", "calls": [{"tool", "params", "result" 또는 "error"}], "model"}"""
+    body = _new_body(system, contents, model)
     calls, forced = [], False
-    for _ in range(MAX_STEPS + 1):
-        d = generate()
-        cands = d.get("candidates") or []
-        if not cands:
-            reason = (d.get("promptFeedback") or {}).get("blockReason", "응답 없음")
-            raise LLMError(f"Gemini가 답하지 않았습니다 ({reason}).")
-        content = cands[0].get("content") or {"role": "model", "parts": []}
+    for _ in range(steps + 1):
+        d, model = _generate_any(key, model, body)
+        content = _first(d)
         parts = content.get("parts") or []
         fcs = [p["functionCall"] for p in parts if "functionCall" in p]
         if not fcs:
@@ -345,3 +354,181 @@ def ask(key: str, question: str, run_tool: Callable[[str, dict], dict], history:
             responses.append({"functionResponse": {"name": name, "response": payload}})
         body["contents"].append({"role": "user", "parts": responses})
     return {"text": "질문이 복잡해 여러 단계 분석이 필요합니다. 아래 결과를 참고해 주세요.", "calls": calls, "model": model}
+
+
+# ---------------------------------------------------------------------------
+# 질문 하나에 답하기 (AI 분석가)
+# ---------------------------------------------------------------------------
+def ask(key: str, question: str, run_tool: Callable[[str, dict], dict], history: list[dict] | None = None,
+        model: str | None = None) -> dict:
+    """반환: {"text": 답변, "calls": [{"tool", "params", "result" 또는 "error"}], "model": 모델명}"""
+    contents = []
+    for h in (history or [])[-HISTORY_TURNS:]:
+        contents.append({"role": "user", "parts": [{"text": h["q"]}]})
+        if h.get("a"):
+            contents.append({"role": "model", "parts": [{"text": h["a"]}]})
+    contents.append({"role": "user", "parts": [{"text": question}]})
+    return _tool_loop(key, SYSTEM, contents, run_tool, model or pick_model(key))
+
+
+# ---------------------------------------------------------------------------
+# Growth Lab 초안: 문제 → (도구로 근거 확인) → 가설·전략(ICE)·실험 설계 초안
+# ---------------------------------------------------------------------------
+DRAFT_GATHER = SYSTEM + """
+[Growth Lab 초안 작업]
+지금은 실무자의 질문이 아니라, 팀이 Growth Lab에 저장한 '문제'에 대한 가설·전략·실험 초안을 만들기 위해 근거를 모으는 단계다.
+- 문제의 분석 기간을 기준으로, 원인을 좁히는 데 필요한 도구를 2~4개 호출한다(예: 퍼널 구간, 테마, 고객군, 상품, 변화 탐지).
+- 다 확인했으면 '확인된 사실'(도구 숫자 그대로)과 '원인 후보와 각 후보의 근거·반대 근거'를 한국어로 정리한다(규칙 7의 길이 제한은 적용하지 않는다).
+"""
+
+DRAFT_WRITE = """너는 식품 이커머스 그로스팀의 분석가다. 아래 [문제]와 [근거]만 사용해 Growth Lab 초안을 JSON으로 쓴다.
+규칙
+1. 숫자는 [근거]나 [문제]에 있는 숫자만 그대로 쓴다. 새 숫자를 계산·추정·창작하지 않는다(ICE 점수와 최소 검출 효과는 예외).
+2. 가설은 3개. 각각 근거(데이터로 확인된 사실), 반대 근거(가설을 약하게 만드는 사실이나 아직 모르는 점), 추가 확인(이 데이터로 할 수 있는 확인 방법).
+   근거가 없으면 '근거 데이터 없음 - 확인 필요'라고 쓴다.
+3. 전략은 2~3개. 실행 가능한 개선 액션, 연결 가설(가설 문장 그대로), 기대 영향, Impact·Confidence·Ease(각 1~10 정수)와 점수 근거.
+   Confidence는 근거 데이터가 강할수록 높게, Ease는 화면·운영 변경만으로 되면 높게.
+4. 실험은 ICE가 가장 높은 전략 1개. 실험군(B)과 대조군(A)을 구체적으로, 주요 지표는 문제 지표와 같은 비율 지표 1개,
+   배정 단위는 보통 '고객', 최소 검출 효과(상대 %)는 5~30 사이에서 현실적으로, 중단 기준 포함.
+5. 이 데이터에 없는 것(광고비·ROAS, 결제 페이지 진입, 체류 시간, 경쟁사 가격, 비회원)을 근거나 지표로 쓰지 않는다.
+6. 도구 이름, 규칙 번호, 영어 변수명을 쓰지 않는다. 한국어 존댓말 대신 간결한 개조식 문장. 비율은 퍼센트로.
+"""
+
+_S = {"type": "string"}
+DRAFT_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "summary": {"type": "string", "description": "근거 요약 2~3문장"},
+        "hypotheses": {"type": "array", "items": {"type": "object", "properties": {
+            "hypothesis": _S, "evidence": _S, "counter": _S, "check": _S},
+            "required": ["hypothesis", "evidence", "counter", "check"]}},
+        "strategies": {"type": "array", "items": {"type": "object", "properties": {
+            "action": _S, "hypothesis": _S, "impact_text": _S, "impact": {"type": "integer"},
+            "confidence": {"type": "integer"}, "ease": {"type": "integer"}, "reason": _S},
+            "required": ["action", "hypothesis", "impact_text", "impact", "confidence", "ease", "reason"]}},
+        "experiment": {"type": "object", "properties": {
+            "name": _S, "hypothesis": _S, "treatment": _S, "control": _S, "unit": {"type": "string", "enum": ["고객", "세션"]},
+            "target": _S, "metric": _S, "mde": {"type": "number"}, "stop": _S},
+            "required": ["name", "hypothesis", "treatment", "control", "unit", "target", "metric", "mde", "stop"]},
+    },
+    "required": ["summary", "hypotheses", "strategies", "experiment"],
+}
+
+
+def problem_brief(p: dict) -> str:
+    """Growth Lab 문제를 모델에게 넘길 글로."""
+    obs, ctx, dfn = p.get("observed") or {}, p.get("context") or {}, p.get("definition") or {}
+    lines = [f"제목: {p.get('title', '')}", f"출처 화면: {p.get('source_page', '')}",
+             f"분석 기간: {ctx.get('period', '')} (도구의 end는 마지막 날의 다음 날) / 비교 기간: {ctx.get('compare', '')}"]
+    keys = {"metric": "지표", "segment": "대상", "definition": "정의", "previous": "비교 기간 값", "current": "분석 기간 값",
+            "direction": "방향", "n_current": "분모", "p_value": "p값"}
+    for k, lab in keys.items():
+        v = obs.get(k)
+        if v is None or v == "":
+            continue
+        if k in ("previous", "current") and obs.get("unit", "rate") == "rate" and isinstance(v, (int, float)):
+            v = f"{v * 100:.1f}%"
+        elif isinstance(v, float):
+            v = f"{v:,.4g}"
+        lines.append(f"{lab}: {v}")
+    for k, lab in {"statement": "팀이 쓴 문제 문장", "target": "대상 고객", "impact": "비즈니스 영향"}.items():
+        if dfn.get(k):
+            lines.append(f"{lab}: {dfn[k]}")
+    return "\n".join(lines)
+
+
+_VAL_RE = re.compile(r"(\d[\d,]*(?:\.\d+)?)\s*(만\s*)?(원|%|%p|건|명|배|개|일)")
+
+
+def _numbers(text: str) -> list[tuple[float, str]]:
+    out = []
+    for num, man, unit in _VAL_RE.findall(text or ""):
+        v = float(num.replace(",", "")) * (10000 if man else 1)
+        out.append((v, unit))
+    return out
+
+
+def unverified_numbers(text: str, evidence: str) -> list[str]:
+    """text 속 숫자 중 evidence(도구 결과·문제 정보)에 없는 것. 반올림 차이는 허용."""
+    ev = _numbers(evidence)
+    bad = []
+    for m_ in _VAL_RE.finditer(text or ""):
+        v, u = _numbers(m_.group(0))[0]
+        same = [e for e, eu in ev if eu == u]
+        tol = 0.051 if u in ("%", "%p", "배") else max(0.5, abs(v) * 0.01) if m_.group(2) else 0.5
+        if not any(abs(e - v) <= tol for e in same):
+            bad.append(m_.group(0))
+    return bad
+
+
+def _evidence_text(brief: str, calls: list[dict]) -> str:
+    parts = [brief]
+    for c in calls:
+        if "result" in c:
+            r = summarize(c["result"])
+            parts.append(json.dumps(r, ensure_ascii=False))
+            parts.extend(r["facts"])
+    return "\n".join(parts)
+
+
+def _clamp(v, lo=1, hi=10):
+    try:
+        return max(lo, min(hi, int(round(float(v)))))
+    except (TypeError, ValueError):
+        return 5
+
+
+def draft(key: str, problem: dict, run_tool: Callable[[str, dict], dict], model: str | None = None) -> dict:
+    """Growth Lab 초안. 반환: {"summary", "hypotheses", "strategies", "experiment", "calls", "model", "warnings"}
+    hypotheses/strategies는 Growth Lab 표의 열 이름(가설·근거·…·Impact·…)으로 바꿔 돌려준다."""
+    brief = problem_brief(problem)
+    model = model or pick_model(key)
+    g = _tool_loop(key, DRAFT_GATHER, [{"role": "user", "parts": [{"text": "[문제]\n" + brief}]}], run_tool, model)
+    calls, model = g["calls"], g["model"]
+    evidence = _evidence_text(brief, calls)
+    facts = "\n".join(f"- {f}" for c in calls if "result" in c for f in c["result"]["facts"])
+    prompt = f"[문제]\n{brief}\n\n[근거: 데이터 도구 결과]\n{facts or '(도구 결과 없음)'}\n\n[근거 정리]\n{g['text']}"
+    body = _new_body(DRAFT_WRITE, [{"role": "user", "parts": [{"text": prompt}]}], model, tools=False)
+    body["generationConfig"].update(responseMimeType="application/json", responseSchema=DRAFT_SCHEMA)
+    d, model = _generate_any(key, model, body)
+    raw = "".join(p.get("text", "") for p in _first(d).get("parts") or [] if not p.get("thought")).strip()
+    raw = re.sub(r"^```(?:json)?|```$", "", raw).strip()
+    try:
+        out = json.loads(raw)
+    except json.JSONDecodeError as e:
+        raise LLMError("AI 초안 형식이 올바르지 않습니다. 다시 시도해 주세요.") from e
+
+    warnings = []
+
+    def check(s: str, mark: bool = True) -> str:
+        s = clean(str(s or ""))
+        bad = unverified_numbers(s, evidence)
+        if bad:
+            warnings.extend(bad)
+            if mark:
+                s += f" ⚠️ 확인 필요: 근거 데이터에서 찾지 못한 숫자({', '.join(bad)})"
+        return s
+
+    hyps = [{"채택": False, "가설": check(h.get("hypothesis"), mark=False), "근거": check(h.get("evidence")),
+             "반대 근거": check(h.get("counter")), "추가 확인": check(h.get("check")), "작성": "AI 초안"}
+            for h in out.get("hypotheses") or []]
+    strat = []
+    for s in out.get("strategies") or []:
+        i, c, e = _clamp(s.get("impact")), _clamp(s.get("confidence")), _clamp(s.get("ease"))
+        strat.append({"선택": False, "개선 액션": check(s.get("action")), "연결 가설": check(s.get("hypothesis"), mark=False),
+                      "기대 영향": check(s.get("impact_text")), "Impact": i, "Confidence": c, "Ease": e,
+                      "ICE 근거": check(s.get("reason")), "ICE": i * c * e})
+    strat.sort(key=lambda s: -s["ICE"])
+    if strat:
+        strat[0]["선택"] = True
+    # 전략이 연결한 가설은 '채택' 후보로 표시 (사람이 검토 후 해제 가능)
+    linked = {s["연결 가설"] for s in strat}
+    for h in hyps:
+        h["채택"] = h["가설"] in linked
+    ex = out.get("experiment") or {}
+    # 실험 설계의 숫자(중단 기준 5% 등)는 데이터 주장이 아니라 설계 값이라 확인 대상에서 뺀다
+    exp = {k: clean(str(ex.get(k) or "")) for k in ("name", "hypothesis", "treatment", "control", "target", "metric", "stop")}
+    exp["unit"] = ex.get("unit") if ex.get("unit") in ("고객", "세션") else "고객"
+    exp["mde"] = float(_clamp(ex.get("mde", 10), 1, 50))
+    return {"summary": check(out.get("summary")), "hypotheses": hyps, "strategies": strat, "experiment": exp,
+            "calls": calls, "model": model, "warnings": warnings}
