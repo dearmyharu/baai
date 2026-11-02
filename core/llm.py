@@ -6,9 +6,12 @@
 """
 from __future__ import annotations
 
+import http.client
 import json
 import os
 import re
+import socket
+import time
 import urllib.error
 import urllib.request
 from typing import Callable
@@ -62,7 +65,11 @@ REQUIRED = ["start", "end"]
 
 
 class LLMError(Exception):
-    """사용자에게 그대로 보여줄 수 있는 오류."""
+    """사용자에게 그대로 보여줄 수 있는 오류. code: HTTP 상태(없으면 0, 시간 초과는 -1), detail: 원문 일부."""
+
+    def __init__(self, msg, code=0, detail=""):
+        super().__init__(msg)
+        self.code, self.detail = code, detail
 
 
 def function_declarations() -> list[dict]:
@@ -77,7 +84,7 @@ def function_declarations() -> list[dict]:
 # ---------------------------------------------------------------------------
 # HTTP
 # ---------------------------------------------------------------------------
-def _call(key: str, path: str, body: dict | None = None, timeout=60) -> dict:
+def _call(key: str, path: str, body: dict | None = None, timeout=90) -> dict:
     req = urllib.request.Request(
         f"{API}/{path}", data=None if body is None else json.dumps(body).encode("utf-8"),
         headers={"x-goog-api-key": key, "Content-Type": "application/json"}, method="GET" if body is None else "POST")
@@ -89,10 +96,44 @@ def _call(key: str, path: str, body: dict | None = None, timeout=60) -> dict:
         if e.code in (400, 401, 403) and ("API key" in detail or "API_KEY" in detail or "PERMISSION" in detail or "UNAUTH" in detail):
             raise LLMError("Gemini API 키가 올바르지 않거나 권한이 없습니다. Secrets의 GEMINI_API_KEY를 확인해 주세요.") from e
         if e.code == 429:
-            raise LLMError("Gemini API 사용량 한도에 걸렸습니다. 잠시 후 다시 시도해 주세요.") from e
-        raise LLMError(f"Gemini API 오류 {e.code}: {detail}") from e
+            raise LLMError("Gemini API 사용량 한도에 걸렸습니다. 잠시 후 다시 시도해 주세요.", 429, detail) from e
+        raise LLMError(f"Gemini API 오류 {e.code}: {detail}", e.code, detail) from e
     except urllib.error.URLError as e:
+        if isinstance(e.reason, (TimeoutError, socket.timeout)):
+            raise LLMError("Gemini 응답이 너무 오래 걸려 중단했습니다. 잠시 후 다시 질문해 주세요.", -1) from e
         raise LLMError(f"Gemini API에 연결하지 못했습니다: {e.reason}") from e
+    except (TimeoutError, socket.timeout) as e:
+        raise LLMError("Gemini 응답이 너무 오래 걸려 중단했습니다. 잠시 후 다시 질문해 주세요.", -1) from e
+    except (http.client.HTTPException, ConnectionError, json.JSONDecodeError) as e:
+        raise LLMError(f"Gemini API 응답을 받지 못했습니다: {type(e).__name__}") from e
+
+
+def _thinking(model: str) -> dict | None:
+    """도구 고르기는 깊은 추론이 필요 없어 생각 단계를 줄여 응답 시간을 줄인다."""
+    v = re.findall(r"gemini-(\d+(?:\.\d+)?)", model)
+    ver = float(v[0]) if v else 0.0
+    if ver >= 3:
+        return {"thinkingLevel": "low"}
+    if ver >= 2.5 and "flash" in model:
+        return {"thinkingBudget": 0}
+    return None
+
+
+def _generate(key: str, model: str, body: dict) -> dict:
+    """generateContent 호출. 생각 설정을 모델이 거부하면 빼고, 시간 초과면 한 번 더 시도한다."""
+    for attempt in range(3):
+        try:
+            return _call(key, f"models/{model}:generateContent", body)
+        except LLMError as e:
+            gc = body.get("generationConfig", {})
+            if e.code == 400 and "thinkingConfig" in gc and "think" in e.detail.lower():
+                gc.pop("thinkingConfig")
+                continue
+            if e.code == -1 and attempt == 0:
+                time.sleep(1)
+                continue
+            raise
+    raise LLMError("Gemini 응답을 받지 못했습니다. 잠시 후 다시 질문해 주세요.")
 
 
 _MODEL_CACHE: dict[str, str] = {}
@@ -159,9 +200,12 @@ def ask(key: str, question: str, run_tool: Callable[[str, dict], dict], history:
             "tools": [{"functionDeclarations": function_declarations()}],
             "toolConfig": {"functionCallingConfig": {"mode": "AUTO"}},
             "generationConfig": {"temperature": 0}}
+    th = _thinking(model)
+    if th:
+        body["generationConfig"]["thinkingConfig"] = th
     calls = []
     for _ in range(MAX_STEPS):
-        d = _call(key, f"models/{model}:generateContent", body)
+        d = _generate(key, model, body)
         cands = d.get("candidates") or []
         if not cands:
             reason = (d.get("promptFeedback") or {}).get("blockReason", "응답 없음")

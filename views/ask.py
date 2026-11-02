@@ -106,9 +106,10 @@ def answer(question: str, tool: str | None = None, params: dict | None = None):
             entry.update(a=r["text"], model=r["model"],
                          results=[c["result"] for c in r["calls"] if "result" in c],
                          tools=[f"{c['tool']}({', '.join(f'{k}={v}' for k, v in c['params'].items())})" for c in r["calls"]])
-        except llm.LLMError as e:
+        except Exception as e:  # API 오류·시간 초과 등: 앱이 멈추지 않게 안내만 한다
+            msg = str(e) if isinstance(e, llm.LLMError) else f"AI 분석 중 문제가 생겼습니다({type(e).__name__}). 다시 질문해 주세요."
             entry.update(run_direct(tool, params or {}) if tool else {})
-            entry["a"] = f"⚠️ {e}" + (" 대신 정해진 분석 결과를 보여 드립니다." if tool else "")
+            entry["a"] = f"⚠️ {msg}" + (" 대신 정해진 분석 결과를 보여 드립니다." if tool else "")
     elif tool is None:
         entry["a"] = "AI 모델이 연결되면 이런 자유 질문에도 답할 수 있어요. 지금은 아래 예시 질문 중 비슷한 것을 골라 주세요."
     else:
