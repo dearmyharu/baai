@@ -72,15 +72,14 @@ def grade(qid, exp, r) -> tuple[bool, str]:
 def main(delay: float = 4.0):
     key = load_key()
     m = build_all()
-    model = llm.pick_model(key)
-    print(f"모델: {model}\n")
+    print(f"시작 모델: {llm.pick_model(key)} (거절되면 자동 교체)\n")
     exp = {c["id"]: c["expected"](m) for c in CASES}
     qs = [(c["id"], c["level"], c["q"]) for c in CASES] + [(x["id"], "범위 밖", x["q"]) for x in OUT_OF_SCOPE]
     rows = []
     for qid, level, q in qs:
         t0 = time.time()
         try:
-            r = llm.ask(key, q, lambda name, p: T.run(m, name, **p), model=model)
+            r = llm.ask(key, q, lambda name, p: T.run(m, name, **p))   # 교체된 모델을 이어서 쓴다
             ok, why = grade(qid, exp.get(qid), r)
         except llm.LLMError as e:
             r, ok, why = {"text": "", "calls": []}, False, f"API 오류: {e}"
@@ -97,6 +96,7 @@ def main(delay: float = 4.0):
         by[r["level"]][0] += r["ok"]
         by[r["level"]][1] += 1
     summary = " · ".join(f"{k} {a}/{b}" for k, (a, b) in by.items())
+    model = llm.pick_model(key)
     print(f"\n정답 {n_ok}/{len(rows)} ({summary})")
     (HERE / "llm_results.json").write_text(json.dumps({"model": model, "rows": rows}, ensure_ascii=False, indent=1),
                                            encoding="utf-8")
