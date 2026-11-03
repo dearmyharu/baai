@@ -360,7 +360,8 @@ def with_filters(name: str, fn: Callable) -> Callable:
         else:
             o = M.completed_orders(m2, *(cur or (None, None)))
             n, unit = o["customer_id"].nunique(), "구매 고객"
-        warn = " - 30명 미만이라 결과가 우연에 크게 좌우될 수 있음(표본 부족)" if n < 30 else ""
+        warn = (" - 조건에 맞는 고객이 없음" if n == 0 else
+                " - 30명 미만이라 결과가 우연에 크게 좌우될 수 있음(표본 부족)" if n < 30 else "")
         res["facts"].insert(0, f"대상: {info['label']} ({'기간 내 ' if cur else ''}{unit} {n:,}명){warn}")
         res["title"] += f" · {info['label']}"
         res["notes"] = res.get("notes", []) + [
