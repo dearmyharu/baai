@@ -170,6 +170,9 @@ def get_funnel(m, start, end, path="ALL"):
     facts = [f"{a} {int(n):,}세션" + (f" (직전 단계 대비 {pct(r)})" if pd.notna(r) else "")
              for a, n, r in zip(f["단계"], f["세션 수"], f["직전 단계 대비 전환율"])]
     facts.append(f"가장 많이 빠지는 구간: {order[i-1]} → {order[i]} ({pct(worst['직전 단계 대비 전환율'])})")
+    sp = M.path_filter(s, path)
+    facts.append(f"세션 구매 전환율(구매 세션 ÷ 방문 세션, {'전체' if path == 'ALL' else path}): {pct(sp['has_purchase'].mean())} "
+                 f"({int(sp['has_purchase'].sum()):,} / {len(sp):,}세션)")
     # 경로 비교는 어느 경로를 보든 항상 함께 (경로 비교 질문의 기준 지표: 세션 구매 전환율)
     c, b = s[s["path"].eq("CURATION")], s[s["path"].eq("BROWSE")]
     _, p = M.two_prop_test(c["has_purchase"].sum(), len(c), b["has_purchase"].sum(), len(b))
@@ -418,7 +421,15 @@ TOOLS = {t.name: t for t in _TOOL_LIST}
 
 
 def run(m, name: str, **params) -> dict:
-    return TOOLS[name].fn(m, **params)
+    """도구 실행. 이 도구에 없는 입력(AI가 다른 도구의 입력을 섞어 넣은 경우)은 버리고 결과 주의 문구에 남긴다."""
+    t = TOOLS[name]
+    extra = [k for k in params if k not in t.params]
+    for k in extra:
+        params.pop(k)
+    res = t.fn(m, **params)
+    if extra:
+        res["notes"] = res.get("notes", []) + [f"이 분석에 없는 입력은 무시함: {', '.join(extra)}"]
+    return res
 
 
 # ---------------------------------------------------------------------------

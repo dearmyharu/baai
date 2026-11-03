@@ -49,6 +49,8 @@ SYSTEM = """너는 식품 이커머스 회사의 'AI 분석가'다. 데이터 �
 
 [고객 조건]
 - "여성 30대", "서울 고객", "VIP", "카카오로 가입한", "신규 가입", "첫 구매"처럼 대상 고객 조건이 있으면 filters에 넣는다. 없으면 filters를 넣지 않는다.
+- 질문에 나온 조건만 넣는다. 비슷해 보이는 조건을 덧붙이지 않는다(신규 가입·첫 구매·신규 방문은 서로 다른 조건이라
+  질문이 말한 것 하나만 쓴다). 조건 이름은 filters의 정해진 이름만 쓴다.
 - 연령은 출생연도 기준 근사 나이다(생일 정보 없음). 답변에 '출생연도 기준'이라고 밝힌다.
 - 신규 고객: "신규 가입" → new_signup, "첫 구매/처음 산" → customer_type=첫 구매, "처음 방문한/신규 방문" → segment_preference(by=visitor_type).
   그냥 "신규 고객"이면 첫 구매 고객으로 보고, 답변에 "신규 고객 = 생애 첫 구매 고객 기준"이라고 밝히고 가입 기준도 볼 수 있다고 제안한다.
@@ -569,6 +571,21 @@ def problem_brief(p: dict) -> str:
 _VAL_RE = re.compile(r"(\d[\d,]*(?:\.\d+)?)\s*(만\s*)?(원|%|%p|건|명|배|개|일)")
 
 
+_KR_AMOUNT_RE = re.compile(r"(?:(\d[\d,]*(?:\.\d+)?)\s*억\s*)?(?:(\d[\d,]*)\s*만\s*)?(\d[\d,]*)?\s*원")
+
+
+def _normalize_amounts(text: str) -> str:
+    """'827만 5,493원', '1억 1,357만 원', '1.03억원' 같은 한글 단위 금액을 '8,275,493원'처럼 한 숫자로 바꾼다."""
+    def rep(mm):
+        eok, man, rest = mm.groups()
+        if not (eok or man):
+            return mm.group(0)
+        v = float((eok or "0").replace(",", "")) * 1e8 + float((man or "0").replace(",", "")) * 1e4 \
+            + float((rest or "0").replace(",", ""))
+        return f"{v:,.0f}원"
+    return _KR_AMOUNT_RE.sub(rep, text or "")
+
+
 def _numbers(text: str) -> list[tuple[float, str]]:
     out = []
     for num, man, unit in _VAL_RE.findall(text or ""):
@@ -579,12 +596,13 @@ def _numbers(text: str) -> list[tuple[float, str]]:
 
 def unverified_numbers(text: str, evidence: str) -> list[str]:
     """text 속 숫자 중 evidence(도구 결과·문제 정보)에 없는 것. 반올림 차이는 허용."""
-    ev = _numbers(evidence)
+    ev = _numbers(_normalize_amounts(evidence))
     bad = []
-    for m_ in _VAL_RE.finditer(text or ""):
+    for m_ in _VAL_RE.finditer(_normalize_amounts(text)):
         v, u = _numbers(m_.group(0))[0]
         same = [e for e, eu in ev if eu == u]
-        tol = 0.051 if u in ("%", "%p", "배") else max(0.5, abs(v) * 0.01) if m_.group(2) else 0.5
+        # 원 단위는 '만원·억원' 표시 반올림을 고려해 1% 허용, 비율은 0.05%p
+        tol = 0.051 if u in ("%", "%p", "배") else max(0.5, abs(v) * 0.01) if u == "원" else 0.5
         if not any(abs(e - v) <= tol for e in same):
             bad.append(m_.group(0))
     return bad

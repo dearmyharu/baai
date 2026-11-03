@@ -262,7 +262,8 @@ CASES = [
          expected=decomposition(SEP),
          checks=[("explain_revenue_change", fact_won("매출")), ("get_kpis", fact_won("매출"))], params=("explain_revenue_change", d(SEP)),
          text_fn=lambda e: (["매출이 줄", "매출은 줄", "매출이 감소", "매출은 감소", "매출이 떨어", "매출은 떨어", "매출이 하락",
-                             "매출은 하락", "늘지 않", "늘어나지 않", "증가하지 않", "오히려", "전제", "사실과 다"]
+                             "매출은 하락", "늘지 않", "늘어나지 않", "증가하지 않", "오히려", "전제", "사실과 다", "함께 줄",
+                             "패턴이 아니라"]
                             if e["변화"] < 0 else [""])),      # 전제(매출 증가)가 틀렸음을 바로잡아야
     dict(id="V28", period=SEP, level="E 일반화", q="클릭은 많이 되는데 구매로는 잘 안 이어지는 테마 찾아줘.", kind="check", expected=themes(SEP),
          checks=[("get_themes", lambda r, e: ok_if(all(t in " ".join(r["facts"]) for t in e["관심↑ 구매↓"]), "관심↑ 구매↓ 테마 불일치"))],
