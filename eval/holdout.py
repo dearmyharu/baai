@@ -39,6 +39,26 @@ def ok_if(cond, why):
     return None if cond else why
 
 
+def label(p) -> str:
+    return f"{p[0]:%Y-%m-%d} ~ {p[1] - pd.Timedelta(days=1):%Y-%m-%d}"
+
+
+def check_fn(c, tool):
+    """사례의 확인 함수. 사례에 period가 있으면 도구 결과의 기준 기간도 같아야 통과
+    (기간이 달라도 1위가 같은 경우가 있어 결과만으로는 기간 해석을 확인할 수 없음)."""
+    fn = dict(c["checks"]).get(tool)
+    if fn is None:
+        return None
+    if "period" not in c:
+        return fn
+
+    def wrapped(r, e):
+        if not r["period"].startswith(label(c["period"])):
+            return f"기준 기간 불일치({r['period'][:23]}, 정답 {label(c['period'])})"
+        return fn(r, e)
+    return wrapped
+
+
 # ---------------------------------------------------------------------------
 # 정답 계산 (core/metrics.py 직접 사용)
 # ---------------------------------------------------------------------------
@@ -160,66 +180,66 @@ def c_trend_sum(key):
 
 CASES = [
     # L1: 말만 바꾼 질문, 다른 기간
-    dict(id="H01", level="L1", q="7월 매출 얼마였어?", kind="check", expected=kpi(JUL, "revenue"),
+    dict(id="H01", period=JUL, level="L1", q="7월 매출 얼마였어?", kind="check", expected=kpi(JUL, "revenue"),
          checks=[("get_kpis", c_won("revenue")), ("get_trend", c_trend_sum("revenue"))], params=("get_kpis", d(JUL))),
-    dict(id="H02", level="L1", q="8월에 주문 몇 건 들어왔어?", kind="check", expected=kpi(AUG, "orders"),
+    dict(id="H02", period=AUG, level="L1", q="8월에 주문 몇 건 들어왔어?", kind="check", expected=kpi(AUG, "orders"),
          checks=[("get_kpis", c_count("orders", "건"))], params=("get_kpis", d(AUG))),
-    dict(id="H03", level="L1", q="9월 베스트셀러 3개만 알려줘", kind="check", expected=top_products(SEP, 5),
+    dict(id="H03", period=SEP, level="L1", q="9월 베스트셀러 3개만 알려줘", kind="check", expected=top_products(SEP, 5),
          checks=[("rank_items", c_prefix("상품", "상품"))], params=("rank_items", d(SEP) | {"target": "product", "n": 3})),
-    dict(id="H04", level="L1", q="8월에 제일 많이 팔린 카테고리는?", kind="check", expected=top_category(AUG),
+    dict(id="H04", period=AUG, level="L1", q="8월에 제일 많이 팔린 카테고리는?", kind="check", expected=top_category(AUG),
          checks=[("rank_items", lambda r, e: ok_if(r.get("table") is not None and "카테고리" in r["table"]
                                                     and r["table"]["카테고리"].iloc[0] == e["1위"], "1위 카테고리 불일치"))],
          params=("rank_items", d(AUG) | {"target": "category"})),
-    dict(id="H05", level="L1", q="지난달 주문 한 건당 평균 얼마 썼어?", kind="check", expected=kpi(AUG, "aov"),
+    dict(id="H05", period=AUG, level="L1", q="지난달 주문 한 건당 평균 얼마 썼어?", kind="check", expected=kpi(AUG, "aov"),
          checks=[("get_kpis", c_won("aov"))], params=("get_kpis", d(AUG))),
-    dict(id="H06", level="L1", q="6월부터 8월까지 매출 합계는?", kind="check", expected=kpi(JUN_AUG, "revenue"),
+    dict(id="H06", period=JUN_AUG, level="L1", q="6월부터 8월까지 매출 합계는?", kind="check", expected=kpi(JUN_AUG, "revenue"),
          checks=[("get_kpis", c_won("revenue")), ("get_trend", c_trend_sum("revenue"))], params=("get_kpis", d(JUN_AUG))),
-    dict(id="H07", level="L1", q="8월 쿠폰 효율 어땠어?", kind="check", expected=coupon_eff(AUG),
+    dict(id="H07", period=AUG, level="L1", q="8월 쿠폰 효율 어땠어?", kind="check", expected=coupon_eff(AUG),
          checks=[("get_coupon_efficiency", lambda r, e: ok_if(has(r, f"{e['효율']:.1f}배"), "쿠폰 효율 불일치"))],
          params=("get_coupon_efficiency", d(AUG))),
-    dict(id="H08", level="L1", q="이번 달 주문 중에 취소되거나 환불된 비율은?", kind="check", expected=kpi(SEP, "cancel_refund_rate"),
+    dict(id="H08", period=SEP, level="L1", q="이번 달 주문 중에 취소되거나 환불된 비율은?", kind="check", expected=kpi(SEP, "cancel_refund_rate"),
          checks=[("get_kpis", c_pct("cancel_refund_rate"))], params=("get_kpis", d(SEP))),
     # L2: 같은 도구의 다른 쓰임
-    dict(id="H09", level="L2", q="8월에 구매 전환이 제일 잘 된 큐레이션 테마는?", kind="check", expected=best_theme(AUG),
+    dict(id="H09", period=AUG, level="L2", q="8월에 구매 전환이 제일 잘 된 큐레이션 테마는?", kind="check", expected=best_theme(AUG),
          checks=[("get_themes", lambda r, e: ok_if(has(r, f"구매 전환율 1위: {e['1위']}"), "1위 테마 불일치"))],
          params=("get_themes", d(AUG))),
-    dict(id="H10", level="L2", q="7월에는 구매 과정 중 어디서 제일 많이 이탈했어?", kind="check", expected=worst_step(JUL),
+    dict(id="H10", period=JUL, level="L2", q="7월에는 구매 과정 중 어디서 제일 많이 이탈했어?", kind="check", expected=worst_step(JUL),
          checks=[("get_funnel", lambda r, e: ok_if(has(r, e["구간"]), "이탈 구간 불일치"))], params=("get_funnel", d(JUL))),
-    dict(id="H11", level="L2", q="주 단위로 매출 흐름 보여줘", kind="check", expected=weekly,
+    dict(id="H11", period=ALL, level="L2", q="주 단위로 매출 흐름 보여줘", kind="check", expected=weekly,
          checks=[("get_trend", lambda r, e: ok_if(r.get("table") is not None and list(r["table"]["매출"]) == e["매출"],
                                                   "주별 매출(전체 기간) 불일치"))],
          params=("get_trend", d(ALL) | {"grain": "week"})),
-    dict(id="H12", level="L2", q="VIP 등급 고객은 어떤 카테고리를 많이 사?", kind="check", expected=pref_top(SEP, "grade_at_order"),
+    dict(id="H12", period=SEP, level="L2", q="VIP 등급 고객은 어떤 카테고리를 많이 사?", kind="check", expected=pref_top(SEP, "grade_at_order"),
          checks=[("segment_preference", lambda r, e: ok_if(has(r, f"VIP: {e['1위']['VIP']}"), "VIP 1위 카테고리 불일치"))],
          params=("segment_preference", d(SEP) | {"by": "grade_at_order"})),
     dict(id="H13", level="L2", q="가입 경로에 따라 재구매율이 달라?", kind="check", expected=repeat_low("signup_channel"),
          checks=[("segment_repeat", lambda r, e: ok_if(has(r, f"가장 낮은 고객군: {e['가장 낮은 고객군']}"), "가입 경로별 결과 아님"))],
          params=("segment_repeat", {"by": "signup_channel"})),
-    dict(id="H14", level="L2", q="처음 온 방문자와 다시 온 방문자가 사는 카테고리가 달라?", kind="check",
+    dict(id="H14", period=SEP, level="L2", q="처음 온 방문자와 다시 온 방문자가 사는 카테고리가 달라?", kind="check",
          expected=pref_top(SEP, "visitor_type"),
          checks=[("segment_preference", lambda r, e: ok_if(all(has(r, f"{g}: {c}") for g, c in e["1위"].items()
                                                                if g != "판정 불가"), "신규/재방문 1위 카테고리 불일치"))],
          params=("segment_preference", d(SEP) | {"by": "visitor_type"})),
-    dict(id="H15", level="L2", q="8월 매출이 7월보다 늘어난 이유가 뭐야?", kind="check", expected=rev_change(AUG),
+    dict(id="H15", period=AUG, level="L2", q="8월 매출이 7월보다 늘어난 이유가 뭐야?", kind="check", expected=rev_change(AUG),
          checks=[("explain_revenue_change", lambda r, e: ok_if(has(r, T.won(abs(e["변화"])), "늘었습니다" if e["변화"] >= 0 else "줄었습니다"),
                                                                "8월 vs 7월 매출 분해 아님"))],
          params=("explain_revenue_change", d(AUG))),
     # L3: 탐색·진단
-    dict(id="H16", level="L3", q="8월에 7월이랑 비교해서 눈에 띄게 달라진 게 있어?", kind="check", expected=changes(AUG),
+    dict(id="H16", period=AUG, level="L3", q="8월에 7월이랑 비교해서 눈에 띄게 달라진 게 있어?", kind="check", expected=changes(AUG),
          checks=[("detect_changes", lambda r, e: ok_if(r["title"] == f"확인할 변화 {e['개수']}개", "8월 기준 변화 탐지 아님")),
                  ("explain_revenue_change", lambda r, e: ok_if(r["period"].startswith("2026-08-01"), "8월 기준 아님"))],
          params=("detect_changes", d(AUG))),
-    dict(id="H17", level="L3", q="8월 데이터로 보면 밀어줄 만한 상품이 뭐야?", kind="check", expected=potential(AUG),
+    dict(id="H17", period=AUG, level="L3", q="8월 데이터로 보면 밀어줄 만한 상품이 뭐야?", kind="check", expected=potential(AUG),
          checks=[("find_potential_products", c_prefix("product_name", "후보"))], params=("find_potential_products", d(AUG))),
     dict(id="H18", level="L3", q="충성 고객은 몇 명이야?", kind="check", expected=rfm_count("충성"),
          checks=[("get_segments", lambda r, e: ok_if(has(r, f"충성: {e['고객수']:,}명"), "충성 고객 수 불일치"))],
          params=("get_segments", d(SEP))),
-    dict(id="H19", level="L3", q="이번 주 매출이 지난주보다 줄었어?", kind="check", expected=rev_change(THIS_WEEK),
+    dict(id="H19", period=THIS_WEEK, level="L3", q="이번 주 매출이 지난주보다 줄었어?", kind="check", expected=rev_change(THIS_WEEK),
          checks=[("get_kpis", lambda r, e: ok_if(has(r, T.won(e["매출"])) and r["period"].startswith("2026-09-24"), "이번 주 매출 아님")),
                  ("explain_revenue_change", lambda r, e: ok_if(has(r, T.won(abs(e["변화"]))), "이번 주 vs 지난주 아님"))],
          params=("explain_revenue_change", d(THIS_WEEK))),
     # L4: 제안
-    dict(id="H20", level="L4", q="상품 클릭에서 장바구니로 가는 비율을 10% 올리는 실험을 하려면 표본이 얼마나 필요해?", kind="check",
+    dict(id="H20", period=SEP, level="L4", q="상품 클릭에서 장바구니로 가는 비율을 10% 올리는 실험을 하려면 표본이 얼마나 필요해?", kind="check",
          expected=sample(2, 0.10),
          checks=[("design_experiment", lambda r, e: ok_if(has(r, f"그룹당 필요 세션 {e['그룹당']:,}개"), "단계·개선폭 불일치"))],
          params=("design_experiment", d(SEP) | {"step": 2, "lift": 0.10})),
@@ -251,7 +271,7 @@ def selfcheck(data_dir=None) -> int:
             continue
         tool, params = c["params"]
         e = c["expected"](m)
-        fn = dict(c["checks"])[tool]
+        fn = check_fn(c, tool)
         try:
             why = fn(T.run(m, tool, **params), e)
         except Exception as ex:  # noqa: BLE001

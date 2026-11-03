@@ -100,7 +100,8 @@ def grade_holdout(c, exp, r) -> tuple[bool, str]:
         ok = bool(c["tools"] & set(used))
         return ok, "기대 도구 사용(내용은 사람 확인)" if ok else f"기대 도구 {'/'.join(sorted(c['tools']))} 미사용 (사용: {', '.join(used) or '없음'})"
     whys = []
-    for tool, fn in c["checks"]:
+    for tool, _ in c["checks"]:
+        fn = H.check_fn(c, tool)
         for x in calls:
             if x["tool"] == tool and "result" in x:
                 w = fn(x["result"], exp)
