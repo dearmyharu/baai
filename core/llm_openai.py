@@ -183,9 +183,10 @@ def tool_loop(key: str, system: str, contents: list[dict], run_tool: Callable[[s
                                                "parameters": d["parameters"]}} for d in L.function_declarations()]
     msgs = _messages(system, contents)
     body = {"messages": msgs, "tools": tools, "tool_choice": "auto"}
-    calls, forced = [], False
+    calls, forced, usage = [], False, L.new_usage()
     for _ in range(steps + 1):
         d, model = _chat_any(key, model, body)
+        L.add_usage(usage, d)
         msg = _message_of(d)
         tcs = msg.get("tool_calls") or []
         if not tcs:
@@ -198,7 +199,7 @@ def tool_loop(key: str, system: str, contents: list[dict], run_tool: Callable[[s
                 continue
             if not calls and L._NUM_RE.search(text):
                 text = "데이터 도구로 확인한 숫자가 없어 답할 수 없습니다. 질문을 조금 더 구체적으로 해 주세요."
-            return {"text": L.clean(text), "calls": calls, "model": model}
+            return {"text": L.clean(text), "calls": calls, "model": model, "usage": usage}
         body["tool_choice"] = "auto"
         msgs.append({"role": "assistant", "content": msg.get("content"), "tool_calls": tcs})
         for tc in tcs:
@@ -223,7 +224,8 @@ def tool_loop(key: str, system: str, contents: list[dict], run_tool: Callable[[s
             calls.append(entry)
             msgs.append({"role": "tool", "tool_call_id": tc.get("id"),
                          "content": json.dumps(payload, ensure_ascii=False, default=str)})
-    return {"text": "질문이 복잡해 여러 단계 분석이 필요합니다. 아래 결과를 참고해 주세요.", "calls": calls, "model": model}
+    return {"text": "질문이 복잡해 여러 단계 분석이 필요합니다. 아래 결과를 참고해 주세요.", "calls": calls, "model": model,
+            "usage": usage}
 
 
 def _strict(schema: dict) -> dict:
@@ -244,9 +246,11 @@ def _strict(schema: dict) -> dict:
     return s
 
 
-def json_call(key: str, model: str, system: str, prompt: str, schema: dict, name: str = "draft") -> tuple[str, str]:
-    """도구 없이 JSON schema 형식으로 답하게 한다. (JSON 문자열, 실제 쓴 모델)"""
+def json_call(key: str, model: str, system: str, prompt: str, schema: dict, name: str = "draft") -> tuple[str, str, dict]:
+    """도구 없이 JSON schema 형식으로 답하게 한다. (JSON 문자열, 실제 쓴 모델, 토큰 사용량)"""
     body = {"messages": [{"role": "system", "content": system}, {"role": "user", "content": prompt}],
             "response_format": {"type": "json_schema", "json_schema": {"name": name, "schema": _strict(schema), "strict": True}}}
     d, model = _chat_any(key, model, body)
-    return (_message_of(d).get("content") or "").strip(), model
+    usage = L.new_usage()
+    L.add_usage(usage, d)
+    return (_message_of(d).get("content") or "").strip(), model, usage

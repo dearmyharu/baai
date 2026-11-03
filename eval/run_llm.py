@@ -91,6 +91,7 @@ def main(delay: float | None = None):
     exp = {c["id"]: c["expected"](m) for c in CASES}
     qs = [(c["id"], c["level"], c["q"]) for c in CASES] + [(x["id"], "범위 밖", x["q"]) for x in OUT_OF_SCOPE]
     rows = []
+    total = llm.new_usage()
     for qid, level, q in qs:
         t0 = time.time()
         for attempt in range(3):
@@ -104,7 +105,10 @@ def main(delay: float | None = None):
                     break
                 print(f"  (사용량 한도 - 30초 기다렸다 다시 시도)")
                 time.sleep(30)
-        rows.append({"id": qid, "level": level, "q": q, "ok": ok, "why": why, "answer": r["text"],
+        u = r.get("usage") or llm.new_usage()
+        for k in total:
+            total[k] += u[k]
+        rows.append({"id": qid, "level": level, "q": q, "ok": ok, "why": why, "answer": r["text"], "usage": u,
                      "calls": [{"tool": c["tool"], "params": c["params"], "error": c.get("error")} for c in r["calls"]],
                      "sec": round(time.time() - t0, 1)})
         print(f"{'O' if ok else 'X'} #{qid:<3} {why}")
@@ -118,10 +122,12 @@ def main(delay: float | None = None):
         by[r["level"]][1] += 1
     summary = " · ".join(f"{k} {a}/{b}" for k, (a, b) in by.items())
     model = llm.pick_model(key)
+    use = llm.usage_label(model, total) or "토큰 정보 없음"
     print(f"\n정답 {n_ok}/{len(rows)} ({summary})")
-    (HERE / "llm_results.json").write_text(json.dumps({"model": model, "rows": rows}, ensure_ascii=False, indent=1),
+    print(f"사용량: {use} · 문항당 평균 {sum(r['sec'] for r in rows) / max(len(rows), 1):.1f}초")
+    (HERE / "llm_results.json").write_text(json.dumps({"model": model, "usage": total, "rows": rows}, ensure_ascii=False, indent=1),
                                            encoding="utf-8")
-    md = [f"# AI 분석가 평가 결과", "", f"모델 `{model}` · 정답 **{n_ok}/{len(rows)}** ({summary})", "",
+    md = [f"# AI 분석가 평가 결과", "", f"모델 `{model}` · 정답 **{n_ok}/{len(rows)}** ({summary})", "", f"사용량: {use}", "",
           "| # | 레벨 | 질문 | 판정 | 사유 | 사용한 도구 | 답변 (앞부분) |", "| --- | --- | --- | --- | --- | --- | --- |"]
     for r in rows:
         tools_ = "; ".join(f"{c['tool']}{json.dumps(c['params'], ensure_ascii=False)}" for c in r["calls"]) or "-"

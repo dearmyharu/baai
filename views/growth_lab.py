@@ -98,6 +98,7 @@ with st.container(border=True):
     D = st.session_state.get(dkey)
     if D:
         st.markdown(D["summary"])
+        st.caption(f"모델 {D['model']}" + (f" · {llm.usage_label(D['model'], D.get('usage'))}" if D.get("usage") else ""))
         if D["warnings"]:
             st.warning(f"근거 데이터에서 찾지 못한 숫자가 {len(D['warnings'])}개 있습니다: {', '.join(D['warnings'])}. "
                        "해당 칸에 '⚠️ 확인 필요'를 붙였으니 반영 전에 확인하세요.")

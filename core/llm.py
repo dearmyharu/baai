@@ -30,9 +30,15 @@ SYSTEM = """너는 식품 이커머스 회사의 'AI 분석가'다. 데이터 �
 [데이터]
 - 기간: 2026-04-01 ~ 2026-09-30 (마지막 날 2026-09-30). 로그인 고객의 큐레이션·검색·카테고리 세션, 주문, 쿠폰, 상품.
 - 기간 해석: 이번 달=2026-09, 지난달=2026-08, 이번 주=최근 7일(2026-09-24~09-30), 최근 2주=2026-09-17~09-30,
-  기간이 없으면 이번 달(9월). 추이는 전체 기간. 도구의 end는 마지막 날의 다음 날이다(9월 → start=2026-09-01, end=2026-10-01).
+  기간이 없으면 이번 달(9월). 순위·구성·비중·고객 질문도 기간이 없으면 9월이다(전체 기간으로 넓히지 않는다). 추이만 전체 기간. 도구의 end는 마지막 날의 다음 날이다(9월 → start=2026-09-01, end=2026-10-01).
 - "지난달보다/비교" 질문은 비교 대상 달이 아니라 '보고 싶은 기간'을 넘긴다(도구가 직전 기간과 자동 비교).
   예: "지난달보다 매출이 왜 변했어?" → 이번 달(9월) 기간, "지난달 매출 얼마야?" → 8월 기간.
+
+[도구 고르기]
+- 휴면·이탈·안 돌아오는 고객·단골·RFM → get_segments (휴면 고객을 다시 사게 하는 방법 질문도 먼저 get_segments)
+- 첫 구매 vs 기존 고객 비교, 재구매까지 걸리는 기간 → get_retention
+- 재구매가 안 되는/잘 되는 고객군 → segment_repeat
+- 카테고리별 매출·비중 → rank_items(target=category), 상품 순위 → rank_items(target=product)
 
 [규칙]
 1. 숫자는 반드시 도구 결과에서만 가져온다. 도구 없이 숫자를 말하거나 추정하지 않는다.
@@ -94,7 +100,7 @@ TOOL_KO = {
     "get_segments": "고객군(RFM) 분석", "segment_preference": "고객군별 선호 카테고리", "segment_repeat": "고객군별 재구매율",
     "design_experiment": "실험 설계", "find_potential_products": "성장 잠재력 상품 분석",
 }
-_TOOL_RE = re.compile(r"`?\b(" + "|".join(sorted(TOOL_KO, key=len, reverse=True)) + r")\b(?:\(\))?`?")
+_TOOL_RE = re.compile(r"`?(?<![A-Za-z0-9_])(" + "|".join(sorted(TOOL_KO, key=len, reverse=True)) + r")(?![A-Za-z0-9_])(?:\(\))?`?")
 _RULE_RE = re.compile(r"\s*\(?(?:규칙|지시문?) ?\d+번(?:에 따라|에 의해)?\)?,?")
 
 
@@ -104,10 +110,63 @@ FORCE_TOOL_MSG = ("방금 답변의 숫자는 데이터 도구 결과가 아닙�
                   "알맞은 도구를 호출해 결과를 받은 뒤 그 숫자로만 다시 답하세요.")
 
 
+_ANY_TOOL_RE = re.compile(r"`?(?<![A-Za-z0-9_])(get_[a-z_]+|[a-z]+(?:_[a-z]+)+)(?![A-Za-z0-9_])(?:\(\))?`?")
+
+
+def _tool_label(name: str) -> str:
+    """모델이 지어낸 도구 이름(get_segment_repeat 등)도 가장 비슷한 도구의 한글 이름으로."""
+    import difflib
+    base = name[4:] if name.startswith("get_") else name
+    hit = difflib.get_close_matches(name, TOOL_KO, n=1, cutoff=0.6) or difflib.get_close_matches(base, TOOL_KO, n=1, cutoff=0.6)
+    return TOOL_KO[hit[0]] if hit else "관련 분석"
+
+
 def clean(text: str) -> str:
     """도구 이름·규칙 번호 같은 내부 표현을 지운다."""
     text = _TOOL_RE.sub(lambda mm: TOOL_KO[mm.group(1)], text)
+    # 그 밖의 영어 snake_case 식별자(get_로 시작하거나 도구와 비슷한 것)도 바꾼다
+    text = _ANY_TOOL_RE.sub(lambda mm: _tool_label(mm.group(1)) if mm.group(1).startswith("get_")
+                            or _tool_label(mm.group(1)) != "관련 분석" else mm.group(0), text)
     return _RULE_RE.sub("", text).strip()
+
+
+# ---------------------------------------------------------------------------
+# 토큰 사용량: 응답마다 API가 알려 주는 입력·출력 토큰을 모은다 (키만으로도 사용량을 볼 수 있게)
+# ---------------------------------------------------------------------------
+# 1M 토큰당 달러 (입력, 출력). 공개 단가 기준 추정치이며 실제 청구액과 다를 수 있다. 없는 모델은 비용 표시 안 함.
+PRICES = {
+    "gpt-5.4-nano": (0.20, 1.25), "gpt-5-nano": (0.05, 0.40), "gpt-5-mini": (0.25, 2.00),
+    "gpt-4.1-nano": (0.10, 0.40), "gpt-4.1-mini": (0.40, 1.60), "gpt-4o-mini": (0.15, 0.60),
+}
+
+
+def new_usage() -> dict:
+    return {"input": 0, "output": 0}
+
+
+def add_usage(usage: dict, d: dict) -> None:
+    """OpenAI(usage) 또는 Gemini(usageMetadata) 응답의 토큰 수를 더한다."""
+    u = d.get("usage")
+    if u:
+        usage["input"] += u.get("prompt_tokens") or 0
+        usage["output"] += u.get("completion_tokens") or 0
+        return
+    g = d.get("usageMetadata") or {}
+    usage["input"] += g.get("promptTokenCount") or 0
+    usage["output"] += (g.get("candidatesTokenCount") or 0) + (g.get("thoughtsTokenCount") or 0)
+
+
+def cost(model: str, usage: dict) -> float | None:
+    p = PRICES.get(re.sub(r"-\d{4}-\d{2}-\d{2}$", "", model or ""))
+    return None if not p or not usage else (usage["input"] * p[0] + usage["output"] * p[1]) / 1e6
+
+
+def usage_label(model: str, usage: dict | None) -> str:
+    """'토큰 입력 1,234 · 출력 567 (약 $0.0012)'"""
+    if not usage or not (usage["input"] or usage["output"]):
+        return ""
+    c = cost(model, usage)
+    return f"토큰 입력 {usage['input']:,} · 출력 {usage['output']:,}" + (f" (약 ${c:.4f})" if c is not None else "")
 
 
 # ---------------------------------------------------------------------------
@@ -347,9 +406,10 @@ def _tool_loop_gemini(key: str, system: str, contents: list[dict], run_tool: Cal
     """모델이 도구를 부르면 실행해 결과를 돌려주기를 반복. 도구 없이 숫자를 말하면 도구 호출을 강제해 다시 묻는다.
     반환: {"text", "calls": [{"tool", "params", "result" 또는 "error"}], "model"}"""
     body = _new_body(system, contents, model)
-    calls, forced = [], False
+    calls, forced, usage = [], False, new_usage()
     for _ in range(steps + 1):
         d, model = _generate_any(key, model, body)
+        add_usage(usage, d)
         content = _first(d)
         parts = content.get("parts") or []
         fcs = [p["functionCall"] for p in parts if "functionCall" in p]
@@ -364,7 +424,7 @@ def _tool_loop_gemini(key: str, system: str, contents: list[dict], run_tool: Cal
                 continue
             if not calls and _NUM_RE.search(text):
                 text = "데이터 도구로 확인한 숫자가 없어 답할 수 없습니다. 질문을 조금 더 구체적으로 해 주세요."
-            return {"text": clean(text), "calls": calls, "model": model}
+            return {"text": clean(text), "calls": calls, "model": model, "usage": usage}
         body["toolConfig"]["functionCallingConfig"]["mode"] = "AUTO"
         body["contents"].append(content)            # 모델 응답은 그대로 돌려준다(생각 서명 보존)
         responses = []
@@ -385,7 +445,8 @@ def _tool_loop_gemini(key: str, system: str, contents: list[dict], run_tool: Cal
             calls.append(entry)
             responses.append({"functionResponse": {"name": name, "response": payload}})
         body["contents"].append({"role": "user", "parts": responses})
-    return {"text": "질문이 복잡해 여러 단계 분석이 필요합니다. 아래 결과를 참고해 주세요.", "calls": calls, "model": model}
+    return {"text": "질문이 복잡해 여러 단계 분석이 필요합니다. 아래 결과를 참고해 주세요.", "calls": calls, "model": model,
+            "usage": usage}
 
 
 # ---------------------------------------------------------------------------
@@ -516,16 +577,19 @@ def draft(key: str, problem: dict, run_tool: Callable[[str, dict], dict], model:
     brief = problem_brief(problem)
     model = model or pick_model(key)
     g = _tool_loop(key, DRAFT_GATHER, [{"role": "user", "parts": [{"text": "[문제]\n" + brief}]}], run_tool, model)
-    calls, model = g["calls"], g["model"]
+    calls, model, usage = g["calls"], g["model"], dict(g["usage"])
     evidence = _evidence_text(brief, calls)
     facts = "\n".join(f"- {f}" for c in calls if "result" in c for f in c["result"]["facts"])
     prompt = f"[문제]\n{brief}\n\n[근거: 데이터 도구 결과]\n{facts or '(도구 결과 없음)'}\n\n[근거 정리]\n{g['text']}"
     if provider(key) == "openai":
-        raw, model = _openai().json_call(key, model, DRAFT_WRITE, prompt, DRAFT_SCHEMA, "growth_lab_draft")
+        raw, model, u = _openai().json_call(key, model, DRAFT_WRITE, prompt, DRAFT_SCHEMA, "growth_lab_draft")
+        for k in usage:
+            usage[k] += u[k]
     else:
         body = _new_body(DRAFT_WRITE, [{"role": "user", "parts": [{"text": prompt}]}], model, tools=False)
         body["generationConfig"].update(responseMimeType="application/json", responseSchema=DRAFT_SCHEMA)
         d, model = _generate_any(key, model, body)
+        add_usage(usage, d)
         raw = "".join(p.get("text", "") for p in _first(d).get("parts") or [] if not p.get("thought")).strip()
     raw = re.sub(r"^```(?:json)?|```$", "", raw).strip()
     try:
@@ -566,4 +630,4 @@ def draft(key: str, problem: dict, run_tool: Callable[[str, dict], dict], model:
     exp["unit"] = ex.get("unit") if ex.get("unit") in ("고객", "세션") else "고객"
     exp["mde"] = float(_clamp(ex.get("mde", 10), 1, 50))
     return {"summary": check(out.get("summary")), "hypotheses": hyps, "strategies": strat, "experiment": exp,
-            "calls": calls, "model": model, "warnings": warnings}
+            "calls": calls, "model": model, "warnings": warnings, "usage": usage}

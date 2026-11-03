@@ -327,7 +327,7 @@ TOOLS = {t.name: t for t in [
          PERIOD, get_kpis, [1, 2, 5, 6, 9]),
     Tool("get_coupon_efficiency", "쿠폰 할인액 대비 쿠폰 사용 주문 매출(쿠폰 효율)과 쿠폰별 효율. ROAS 대신 쓰는 지표",
          PERIOD, get_coupon_efficiency, [8]),
-    Tool("rank_items", "상품 또는 카테고리 상품매출 순위", PERIOD | {"target": "product | category", "n": "개수"}, rank_items, [3, 4]),
+    Tool("rank_items", "상품 또는 카테고리 상품매출 순위·비중. 기간 언급이 없으면 이번 달(9월)", PERIOD | {"target": "product | category", "n": "개수"}, rank_items, [3, 4]),
     Tool("explain_revenue_change", "직전 기간 대비 완료 매출 변화를 주문 수 효과와 객단가 효과로 분해하고 함께 달라진 지표 제시",
          PERIOD, explain_revenue_change, [10, 20]),
     Tool("get_trend", "완료 매출·주문 수 추이", PERIOD | {"grain": "date | week | month"}, get_trend, [11]),

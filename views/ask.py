@@ -109,7 +109,7 @@ def answer(question: str, tool: str | None = None, params: dict | None = None):
         try:
             with st.spinner("데이터를 찾아 분석하는 중..."):
                 r = llm.ask(KEY, question, lambda name, p: tools.run(m, name, **p), history)
-            entry.update(a=r["text"], model=r["model"],
+            entry.update(a=r["text"], model=r["model"], usage=llm.usage_label(r["model"], r.get("usage")),
                          results=[c["result"] for c in r["calls"] if "result" in c],
                          tools=[f"{llm.TOOL_KO.get(c['tool'], c['tool'])}({', '.join(f'{k}={v}' for k, v in c['params'].items())})" for c in r["calls"]])
         except Exception as e:  # API 오류·시간 초과 등: 앱이 멈추지 않게 안내만 한다
@@ -135,7 +135,8 @@ for e in log:
         for res in e.get("results", []):
             show_result(res)
         if e.get("tools") and e.get("model"):
-            st.caption(f"사용한 분석: {' · '.join(e['tools'])} · 모델 {e['model']}")
+            st.caption(f"사용한 분석: {' · '.join(e['tools'])} · 모델 {e['model']}"
+                       + (f" · {e['usage']}" if e.get("usage") else ""))
 
 q = st.chat_input("예: 이번 달 매출 제일 많이 나온 상품은?")
 if q:
