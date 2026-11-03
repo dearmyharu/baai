@@ -35,6 +35,7 @@ from eval.check_tools import CHECKS  # noqa: E402
 from eval import holdout as H  # noqa: E402
 from eval import holdout2 as H2  # noqa: E402
 
+CLARIFY = {x["id"] for x in OUT_OF_SCOPE if x.get("clarify")}
 UNSUPPORTED = {17, 26}      # 16(연령·성별·지역)은 2026-11-03 고객 조건 필터로 지원
 REFUSE_CUES = ("없습니다", "없어", "지원하지", "지원되지", "미지원", "제공하지", "제공되지", "존재하지", "확인할 수 없", "알 수 없",
                "포함되어 있지", "포함되지", "수집되지", "어렵습니다", "불가")
@@ -69,6 +70,9 @@ def grade(qid, exp, r) -> tuple[bool, str]:
     leak = sorted(set(LEAK_RE.findall(text)))
     if leak:
         return False, f"내부 지시문·도구 이름 노출: {', '.join(leak)}"
+    if qid in CLARIFY:
+        ok = bool(r.get("clarify"))
+        return ok, "애매한 기간을 되물음" if ok else "애매한 기간인데 추측해서 답함"
     if qid in UNSUPPORTED or str(qid).startswith("X"):
         ok = any(c in text for c in REFUSE_CUES)
         return ok, "범위 밖·미지원을 밝힘" if ok else "범위 밖인데 그렇다고 말하지 않음"
@@ -116,6 +120,9 @@ def _grade_holdout(c, exp, r) -> tuple[bool, str]:
     leak = sorted(set(LEAK_RE.findall(text)))
     if leak:
         return False, f"내부 지시문·도구 이름 노출: {', '.join(leak)}"
+    if c["kind"] == "clarify":
+        ok = bool(r.get("clarify"))
+        return ok, "애매한 기간을 되물음" if ok else "애매한 기간인데 추측해서 답함"
     if c["kind"] == "hypo":
         ok = any(x in text for x in HYPO_CUES + REFUSE_CUES)
         return ok, "확정할 수 없음·가설임을 밝힘" if ok else "원인을 단정함(가설·한계 표시 없음)"

@@ -391,7 +391,7 @@ _TOOL_LIST = [
     Tool("get_funnel", "방문→상품 클릭→장바구니→구매 퍼널과 가장 많이 빠지는 구간. 큐레이션 경유 vs 일반 탐색의 "
          "세션 구매 전환율 비교와 유의성도 항상 포함하므로 경로 비교 질문도 path=ALL로 한 번만 부른다",
          PERIOD | {"path": "ALL | CURATION | BROWSE"}, get_funnel, [13, 14, 28]),
-    Tool("detect_changes", "직전 기간 대비 통계적으로 크게 달라진 지표 자동 탐지(p<0.05). '요즘 변한 거', '이상한 거' 질문", PERIOD,
+    Tool("detect_changes", "직전 기간 대비 통계적으로 크게 달라진 지표 자동 탐지(p<0.05). '눈에 띄게 변한 거', '이상한 거' 질문", PERIOD,
          detect_changes, [19, 20]),
     Tool("get_themes", "큐레이션 테마별 클릭률·클릭 후 구매율·구매 전환율과 관심 vs 구매 사분면", PERIOD, get_themes, [7, 22, 27]),
     Tool("get_retention", "첫 구매 고객 vs 기존 구매 고객의 수·매출 비중, 재구매까지 걸리는 기간. "
@@ -442,7 +442,7 @@ EXAMPLES = [
     ("지난달보다 매출이 왜 이만큼 변했어?", "explain_revenue_change", dict(start=SEP[0], end=SEP[1])),
     ("월별 매출 추이 보여줘", "get_trend", dict(start="2026-04-01", end=SEP[1], grain="month")),
     ("고객이 어느 단계에서 제일 많이 빠져?", "get_funnel", dict(start=SEP[0], end=SEP[1], path="ALL")),
-    ("요즘 눈에 띄게 변한 거 있어?", "detect_changes", dict(start=SEP[0], end=SEP[1])),
+    ("이번 달 눈에 띄게 변한 거 있어?", "detect_changes", dict(start=SEP[0], end=SEP[1])),
     ("관심은 많은데 구매로 안 이어지는 테마는?", "get_themes", dict(start=SEP[0], end=SEP[1])),
     ("지금 매출은 낮은데 키우면 될 상품은?", "find_potential_products", dict(start=SEP[0], end=SEP[1])),
     ("쿠폰 할인해 준 만큼 매출이 나왔어?", "get_coupon_efficiency", dict(start=SEP[0], end=SEP[1])),

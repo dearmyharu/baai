@@ -32,8 +32,8 @@ SYSTEM = """너는 식품 이커머스 회사의 'AI 분석가'다. 데이터 �
 - 기준일: 오늘 = 2026-09-30(수), 데이터의 마지막 날로 본다. 어제 = 2026-09-29.
 - 주는 달력 주(월~일): 이번 주 = 2026-09-28(월)~09-30(수) 3일(start=2026-09-28, end=2026-10-01),
   지난주 = 2026-09-21(월)~09-27(일). 이번 주를 넘기면 도구가 지난주 같은 요일(9/21~9/23)과 자동 비교한다.
-  숫자가 있는 "최근 7일·최근 2주·지난 2주"만 오늘까지 거꾸로 센다(최근 2주 = 09-17~09-30).
-  "요즘·최근·이번에"처럼 숫자가 없으면 이번 달(9월)로 본다.
+  "최근 7일·최근 2주·지난 2주"는 오늘까지 거꾸로 센다(최근 2주 = 09-17~09-30).
+  ("요즘·요새"처럼 기간이 애매한 질문은 코드가 먼저 기간을 되묻는다.)
 - 기간 해석: 이번 달=2026-09, 지난달=2026-08, 지난주·이번 주는 위 달력 주,
   기간이 없으면 이번 달(9월). 순위·구성·비중·고객 질문도 기간이 없으면 9월이다(전체 기간으로 넓히지 않는다). 추이만 전체 기간. 도구의 end는 마지막 날의 다음 날이다(9월 → start=2026-09-01, end=2026-10-01).
 - 여러 달·여러 주에 걸친 기간(예: 6~8월, 2분기)은 그 범위 전체를 한 번에 도구에 넘긴다(6~8월 → start=2026-06-01, end=2026-09-01).
@@ -484,11 +484,44 @@ def _tool_loop_gemini(key: str, system: str, contents: list[dict], run_tool: Cal
 
 
 # ---------------------------------------------------------------------------
+# 애매한 기간 되묻기 (결정 2026-11-03): "요즘·요새·최근(숫자 없이)"은 사람마다 기간이 달라
+# 추측해서 답하지 않고 기간을 고르게 한다. 지시문이 아니라 코드로 정해 항상 같게 동작한다.
+# ---------------------------------------------------------------------------
+_VAGUE_RE = re.compile(r"요즘|요새|근래|최근(?!\s*\d)|얼마\s*전|lately|recently")
+_EXPLICIT_RE = re.compile(r"\d+\s*(?:월|주|일|개월|년)|\d{4}-\d{2}|이번\s*달|지난\s*달|이번\s*주|지난\s*주|어제|오늘|"
+                          r"전체\s*기간|상반기|하반기|분기")
+PERIOD_CHOICES = [("최근 7일", "2026-09-24 ~ 2026-09-30"), ("최근 2주", "2026-09-17 ~ 2026-09-30"),
+                  ("이번 달", "2026-09-01 ~ 2026-09-30"), ("최근 3개월", "2026-07-01 ~ 2026-09-30")]
+
+
+def vague_period(question: str) -> bool:
+    """기간이 애매한 말("요즘")만 있고 정확한 기간("9월", "최근 2주", "이번 주")은 없는 질문인가."""
+    return bool(_VAGUE_RE.search(question or "")) and not _EXPLICIT_RE.search(question or "")
+
+
+def with_period(question: str, label: str) -> str:
+    """되묻기에서 고른 기간을 질문에 붙인다. 예: '요즘 뜨는 상품은? (기간: 최근 2주, 2026-09-17 ~ 2026-09-30)'"""
+    rng = dict(PERIOD_CHOICES).get(label, "")
+    return f"{question} (기간: {label}{', ' + rng if rng else ''})"
+
+
+def clarify_period(question: str) -> dict:
+    word = _VAGUE_RE.search(question).group(0)
+    text = (f"'{word}'은(는) 사람마다 떠올리는 기간이 달라서, 추측해서 숫자를 드리면 틀릴 수 있어요. "
+            "어느 기간으로 볼지 골라 주세요(오늘 = 2026-09-30 기준). 원하는 기간을 직접 적어 다시 물어보셔도 돼요.\n\n"
+            + "\n".join(f"- {k}: {v}" for k, v in PERIOD_CHOICES))
+    return {"text": text, "calls": [], "model": "", "usage": new_usage(), "clarify": [k for k, _ in PERIOD_CHOICES]}
+
+
+# ---------------------------------------------------------------------------
 # 질문 하나에 답하기 (AI 분석가)
 # ---------------------------------------------------------------------------
 def ask(key: str, question: str, run_tool: Callable[[str, dict], dict], history: list[dict] | None = None,
         model: str | None = None) -> dict:
-    """반환: {"text": 답변, "calls": [{"tool", "params", "result" 또는 "error"}], "model": 모델명}"""
+    """반환: {"text": 답변, "calls": [{"tool", "params", "result" 또는 "error"}], "model": 모델명}
+    기간이 애매한 질문이면 AI를 부르지 않고 {"clarify": [기간 선택지]}를 함께 돌려준다(토큰 0)."""
+    if vague_period(question):
+        return clarify_period(question)
     contents = []
     for h in (history or [])[-HISTORY_TURNS:]:
         contents.append({"role": "user", "parts": [{"text": h["q"]}]})

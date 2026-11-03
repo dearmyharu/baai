@@ -268,8 +268,7 @@ CASES = [
     dict(id="V28", period=SEP, level="E 일반화", q="클릭은 많이 되는데 구매로는 잘 안 이어지는 테마 찾아줘.", kind="check", expected=themes(SEP),
          checks=[("get_themes", lambda r, e: ok_if(all(t in " ".join(r["facts"]) for t in e["관심↑ 구매↓"]), "관심↑ 구매↓ 테마 불일치"))],
          params=("get_themes", d(SEP))),
-    dict(id="V29", level="E 일반화", q="최근 성과가 나빠진 큐레이션을 찾고 개선 실험을 제안해줘.", kind="tool",
-         tools={"get_themes", "detect_changes"}),
+    dict(id="V29", level="E 일반화", q="최근 성과가 나빠진 큐레이션을 찾고 개선 실험을 제안해줘.", kind="clarify"),  # 2026-11-03: 애매한 기간은 되묻기
     dict(id="V30", period=SEP, level="E 일반화", q="성장 잠재력이 높은 상품 추천해줘.", kind="check", expected=potential(SEP),
          checks=[("find_potential_products", table_prefix("product_name", "후보"))], params=("find_potential_products", d(SEP))),
 ]

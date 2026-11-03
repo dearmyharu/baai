@@ -245,14 +245,14 @@ CASES = [
          expected=lambda m: {"상태": "요일×시간대 주문 집계 도구 없음", "대체 안내": "테마·퍼널 구간을 평일/주말·시간대로 나눠 보기"}),
     dict(id=18, level="L2", q="첫 구매하고 다시 사기까지 얼마나 걸려?", period="전체 관측 기간", tool="get_retention", check=EXACT, expected=q18),
     # L3 탐색·진단
-    dict(id=19, level="L3", q="요즘 눈에 띄게 변한 거 있어?", period="2026-09 vs 2026-08 (엄격 p<0.05)", tool="detect_changes",
+    dict(id=19, level="L3", q="이번 달 눈에 띄게 변한 거 있어?", period="2026-09 vs 2026-08 (엄격 p<0.05)", tool="detect_changes",
          check=FACTS + ". 상위 변화를 '확인할 후보'로 제시", expected=q19),
     dict(id=20, level="L3", q="지난 2주 매출이 왜 떨어졌어?", period="9/17~9/30 vs 9/3~9/16", tool="explain_revenue_change + detect_changes",
          check=HYPO, expected=q20),
     dict(id=21, level="L3", q="지금 매출은 낮은데 키우면 될 상품은?", period="2026-09 (성장은 vs 2026-08)", tool="product_potential",
          check=FACTS + ". 점수가 예측이 아님을 밝혀야 함", expected=q21),
     dict(id=22, level="L3", q="관심은 많은데 구매로 안 이어지는 테마는?", period="2026-09", tool="get_themes", check=FACTS, expected=q22),
-    dict(id=23, level="L3", q="요즘 뜨는 상품은?", period="2026-09 vs 2026-08", tool="product_potential", check=RANK, expected=q23),
+    dict(id=23, level="L3", q="이번 달 뜨는 상품은?", period="2026-09 vs 2026-08", tool="product_potential", check=RANK, expected=q23),
     dict(id=24, level="L3", q="안 돌아오는 고객이 얼마나 돼?", period="기준일 2026-09-30", tool="get_segments", check=EXACT, expected=q24),
     dict(id=25, level="L3", q="재구매가 특히 안 되는 고객군은?", period="전체 관측 기간", tool="segment_repeat", check=FACTS,
          expected=q25),
@@ -276,4 +276,7 @@ OUT_OF_SCOPE = [
     dict(id="X4", q="경쟁사보다 우리가 비싸서 안 팔려?", missing="경쟁사 가격", alternative="가설로만 제시, Growth Lab 확인 항목으로 저장"),
     dict(id="X5", q="비회원 방문자는 어때?", missing="비로그인 세션", alternative="로그인 고객 기준임을 명시"),
     dict(id="X6", q="다음 달 매출 얼마 나올까?", missing="예측 모델", alternative="최근 추이와 '예측 아님' 표시"),
+    # 기간이 애매한 질문은 추측하지 않고 기간을 되물어야 정답 (결정 2026-11-03, 19·23번은 기간을 넣은 질문으로 바꿈)
+    dict(id="X7", q="요즘 눈에 띄게 변한 거 있어?", missing="정확한 기간", alternative="기간 선택지를 제시하고 되묻기", clarify=True),
+    dict(id="X8", q="요새 뜨는 상품은?", missing="정확한 기간", alternative="기간 선택지를 제시하고 되묻기", clarify=True),
 ]

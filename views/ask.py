@@ -109,7 +109,7 @@ def answer(question: str, tool: str | None = None, params: dict | None = None):
         try:
             with st.spinner("데이터를 찾아 분석하는 중..."):
                 r = llm.ask(KEY, question, lambda name, p: tools.run(m, name, **p), history)
-            entry.update(a=r["text"], model=r["model"], usage=llm.usage_label(r["model"], r.get("usage")),
+            entry.update(a=r["text"], model=r["model"], usage=llm.usage_label(r["model"], r.get("usage")), clarify=r.get("clarify"),
                          unverified=llm.unsupported_in_answer(r["text"], r["calls"]),
                          results=[c["result"] for c in r["calls"] if "result" in c],
                          tools=[f"{llm.TOOL_KO.get(c['tool'], c['tool'])}({', '.join(f'{k}={v}' for k, v in c['params'].items())})" for c in r["calls"]])
@@ -138,11 +138,17 @@ for e in log:
                        "AI가 직접 계산했거나 잘못 옮겼을 수 있으니 아래 분석 결과로 확인해 주세요.", icon=":material/warning:")
         for res in e.get("results", []):
             show_result(res)
+        if e.get("clarify") and e is log[-1]:
+            cols = st.columns(len(e["clarify"]))
+            for j, lab in enumerate(e["clarify"]):
+                if cols[j].button(lab, key=f"clar_{len(log)}_{j}", use_container_width=True):
+                    st.session_state.pending_q = llm.with_period(e["q"], lab)
+                    st.rerun()
         if e.get("tools") and e.get("model"):
             st.caption(f"사용한 분석: {' · '.join(e['tools'])} · 모델 {e['model']}"
                        + (f" · {e['usage']}" if e.get("usage") else ""))
 
-q = st.chat_input("예: 이번 달 매출 제일 많이 나온 상품은?")
+q = st.chat_input("예: 이번 달 매출 제일 많이 나온 상품은?") or st.session_state.pop("pending_q", None)
 if q:
     hit = next((ex for ex in tools.EXAMPLES if ex[0].replace(" ", "") == q.replace(" ", "")), None)
     answer(q, *(hit[1:] if hit else (None, None)))   # 키가 있으면 어떤 질문이든 Gemini가 답한다
