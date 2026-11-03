@@ -24,11 +24,23 @@ def has(facts, *needles):
     return all(n in text for n in needles)
 
 
+def has_change(facts, label, rate):
+    """'{label} ... (비교 기간 대비 +x.x%)'의 변화율이 정답(소수 4자리 반올림 값)과 0.06%p 안에서 같은가."""
+    import re
+    for f in facts:
+        if f.startswith(label):
+            mm = re.search(r"비교 기간 대비 ([+-]?\d+(?:\.\d+)?)%\)", f)
+            return bool(mm) and abs(float(mm.group(1)) - rate * 100) <= 0.06
+    return False
+
+
 # 질문 번호 → (도구, 입력값, 확인 함수(결과, 정답) → 불일치 설명 또는 None)
 CHECKS = {
-    1: ("get_kpis", AUG, lambda r, e: None if has(r["facts"], T.won(e["revenue"]), f"{e['변화율']*100:+.1f}%") else "매출·변화율"),
+    1: ("get_kpis", AUG, lambda r, e: None if has(r["facts"], T.won(e["revenue"])) and has_change(r["facts"], "완료 매출", e["변화율"])
+        else "매출·변화율"),
     2: ("get_kpis", dict(start="2026-09-28", end="2026-10-01"),
-        lambda r, e: None if has(r["facts"], f"{e['orders']:,}건", f"{e['변화율']*100:+.1f}%") else "주문 수·변화율"),
+        lambda r, e: None if has(r["facts"], f"{e['orders']:,}건") and has_change(r["facts"], "완료 주문 수", e["변화율"])
+        else "주문 수·변화율"),
     3: ("rank_items", SEP | dict(target="product", n=5),
         lambda r, e: None if list(r["table"]["상품"]) == [x["product_name"] for x in e["TOP5"]] else "TOP5 순서"),
     4: ("rank_items", SEP | dict(target="category"),
