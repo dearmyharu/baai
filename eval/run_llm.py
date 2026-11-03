@@ -1,8 +1,12 @@
-"""AI 분석가(GPT 또는 Gemini) 평가: 평가셋 36문항을 실제로 물어보고 채점한다.
+"""AI 분석가(GPT 또는 Gemini) 평가: 평가셋 문항을 실제로 물어보고 채점한다.
 
-dashboard 폴더에서:  python eval/run_llm.py   (또는 eval_llm.bat 더블클릭)
+dashboard 폴더에서
+  python eval/run_llm.py                          기본 36문항 (eval_llm.bat)
+  python eval/run_llm.py --set holdout --repeat 3 처음 보는 질문 28문항을 3번 (eval_holdout.bat)
 키: .streamlit/secrets.toml 또는 환경변수 OPENAI_API_KEY (없으면 GEMINI_API_KEY)
-결과: eval/llm_results.md (사람이 읽는 표), eval/llm_results.json
+결과: eval/llm_results[_holdout].md (사람이 읽는 표), .json
+
+엄격 확인(점수와 별도): 답변 문장 속 숫자(원·%·건·명 등)가 도구 결과에 있는지 대조해 '근거 없는 숫자'를 표시한다.
 
 채점 기준
 - 숫자 질문(check_tools.py에 검사가 있는 22문항): 기대 도구를 불렀고, 그 결과가 정답과 같으면 정답
@@ -28,6 +32,7 @@ from core import tools as T  # noqa: E402
 from core.data import build_all  # noqa: E402
 from eval.cases import CASES, OUT_OF_SCOPE  # noqa: E402
 from eval.check_tools import CHECKS  # noqa: E402
+from eval import holdout as H  # noqa: E402
 
 UNSUPPORTED = {16, 17, 26}
 REFUSE_CUES = ("없습니다", "없어", "지원하지", "제공하지", "제공되지", "존재하지", "확인할 수 없", "알 수 없", "포함되어 있지",
@@ -82,60 +87,175 @@ def grade(qid, exp, r) -> tuple[bool, str]:
     return ok, "기대 도구 사용(내용은 사람 확인)" if ok else f"기대 도구 {'/'.join(sorted(want))} 미사용 (사용: {', '.join(used) or '없음'})"
 
 
-def main(delay: float | None = None):
-    key = load_key()
-    if delay is None:   # Gemini 무료 등급은 분당 한도가 낮아 간격을 둔다
-        delay = 1.0 if llm.provider(key) == "openai" else 7.0
-    m = build_all()
-    print(f"시작 모델: {llm.pick_model(key)} ({llm.provider(key)}, 거절되면 자동 교체)\n")
-    exp = {c["id"]: c["expected"](m) for c in CASES}
-    qs = [(c["id"], c["level"], c["q"]) for c in CASES] + [(x["id"], "범위 밖", x["q"]) for x in OUT_OF_SCOPE]
-    rows = []
-    total = llm.new_usage()
-    for qid, level, q in qs:
+def grade_holdout(c, exp, r) -> tuple[bool, str]:
+    calls, text = r["calls"], r["text"]
+    used = [x["tool"] for x in calls]
+    leak = sorted(set(LEAK_RE.findall(text)))
+    if leak:
+        return False, f"내부 지시문·도구 이름 노출: {', '.join(leak)}"
+    if c["kind"] == "refuse":
+        ok = any(x in text for x in REFUSE_CUES)
+        return ok, "범위 밖·미지원을 밝힘" if ok else "범위 밖인데 그렇다고 말하지 않음"
+    if c["kind"] == "tool":
+        ok = bool(c["tools"] & set(used))
+        return ok, "기대 도구 사용(내용은 사람 확인)" if ok else f"기대 도구 {'/'.join(sorted(c['tools']))} 미사용 (사용: {', '.join(used) or '없음'})"
+    whys = []
+    for tool, fn in c["checks"]:
+        for x in calls:
+            if x["tool"] == tool and "result" in x:
+                w = fn(x["result"], exp)
+                if w is None:
+                    return True, "숫자 일치"
+                whys.append(f"{tool}: {w} {x['params']}")
+    if not whys:
+        want = "/".join(t for t, _ in c["checks"])
+        return False, f"기대 도구 {want} 미사용 (사용: {', '.join(used) or '없음'})"
+    return False, " | ".join(whys)[:200]
+
+
+# ---------------------------------------------------------------------------
+# 엄격 확인: 답변 속 숫자가 도구 결과에 있는가
+# ---------------------------------------------------------------------------
+_DATE_RE = re.compile(r"\d{4}\s*[-./년]\s*\d{1,2}\s*[-./월]\s*\d{1,2}\s*일?|\d{1,2}\s*월\s*\d{1,2}\s*일|\d{4}\s*년|\d{1,2}\s*월")
+
+
+def _evidence(calls) -> str:
+    parts = []
+    for c in calls:
+        if "result" not in c:
+            continue
+        s = llm.summarize(c["result"])
+        parts += [s["title"], s["period"], *s["facts"], *s.get("notes", [])]
+        for row in s.get("table_head", []):
+            for v in row.values():
+                if isinstance(v, (int, float)) and not isinstance(v, bool):
+                    if abs(v) <= 1.5:
+                        parts.append(f"{v * 100:.4f}% {v * 100:.4f}%p")
+                    parts.append(" ".join(f"{v}{u}" for u in ("원", "건", "명", "개", "일", "배")))
+    return "\n".join(parts)
+
+
+def unsupported_numbers(r) -> list[str]:
+    if not r["calls"]:
+        return []
+    return llm.unverified_numbers(_DATE_RE.sub(" ", r["text"]), _evidence(r["calls"]))
+
+
+# ---------------------------------------------------------------------------
+# 실행
+# ---------------------------------------------------------------------------
+def questions(which, m):
+    out = []
+    if which in ("main", "all"):
+        exp = {c["id"]: c["expected"](m) for c in CASES}
+        out += [(c["id"], c["level"], c["q"], (lambda r, qid=c["id"]: grade(qid, exp.get(qid), r))) for c in CASES]
+        out += [(x["id"], "범위 밖", x["q"], (lambda r, qid=x["id"]: grade(qid, None, r))) for x in OUT_OF_SCOPE]
+    if which in ("holdout", "all"):
+        for c in H.ALL_CASES:
+            e = c["expected"](m) if c["kind"] == "check" else None
+            out.append((c["id"], c["level"], c["q"], (lambda r, c=c, e=e: grade_holdout(c, e, r))))
+    return out
+
+
+def run_once(key, m, qs, delay):
+    rows, total = [], llm.new_usage()
+    for qid, level, q, grader in qs:
         t0 = time.time()
         for attempt in range(3):
             try:
                 r = llm.ask(key, q, lambda name, p: T.run(m, name, **p))   # 교체된 모델을 이어서 쓴다
-                ok, why = grade(qid, exp.get(qid), r)
+                ok, why = grader(r)
                 break
             except llm.LLMError as e:
                 r, ok, why = {"text": "", "calls": []}, False, f"API 오류: {e}"
                 if e.code != 429:
                     break
-                print(f"  (사용량 한도 - 30초 기다렸다 다시 시도)")
+                print("  (사용량 한도 - 30초 기다렸다 다시 시도)")
                 time.sleep(30)
         u = r.get("usage") or llm.new_usage()
         for k in total:
             total[k] += u[k]
+        loose = unsupported_numbers(r)
         rows.append({"id": qid, "level": level, "q": q, "ok": ok, "why": why, "answer": r["text"], "usage": u,
+                     "unsupported_numbers": loose,
                      "calls": [{"tool": c["tool"], "params": c["params"], "error": c.get("error")} for c in r["calls"]],
                      "sec": round(time.time() - t0, 1)})
-        print(f"{'O' if ok else 'X'} #{qid:<3} {why}")
+        print(f"{'O' if ok else 'X'} #{qid:<4} {why}" + (f"   [근거 없는 숫자: {', '.join(loose)}]" if loose else ""))
         time.sleep(delay)
+    return rows, total
 
-    n_ok = sum(r["ok"] for r in rows)
+
+def summarize_run(rows):
     by = {}
     for r in rows:
         by.setdefault(r["level"], [0, 0])
         by[r["level"]][0] += r["ok"]
         by[r["level"]][1] += 1
-    summary = " · ".join(f"{k} {a}/{b}" for k, (a, b) in by.items())
+    return sum(r["ok"] for r in rows), " · ".join(f"{k} {a}/{b}" for k, (a, b) in by.items())
+
+
+def main():
+    import argparse
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--set", default="main", choices=["main", "holdout", "all"])
+    ap.add_argument("--repeat", type=int, default=1)
+    ap.add_argument("--delay", type=float, default=None)
+    a = ap.parse_args()
+
+    key = load_key()
+    delay = a.delay if a.delay is not None else (1.0 if llm.provider(key) == "openai" else 7.0)  # Gemini 무료 등급은 분당 한도가 낮음
+    m = build_all()
+    print(f"시작 모델: {llm.pick_model(key)} ({llm.provider(key)}, 거절되면 자동 교체) · 문항 세트: {a.set} · {a.repeat}회\n")
+    qs = questions(a.set, m)
+    runs, total = [], llm.new_usage()
+    for i in range(a.repeat):
+        if a.repeat > 1:
+            print(f"--- {i + 1}회차 ---")
+        rows, u = run_once(key, m, qs, delay)
+        for k in total:
+            total[k] += u[k]
+        n_ok, summary = summarize_run(rows)
+        n_num = sum(1 for r in rows if r["unsupported_numbers"])
+        print(f"{i + 1}회차 정답 {n_ok}/{len(rows)} ({summary}) · 근거 없는 숫자가 나온 답변 {n_num}개\n")
+        runs.append({"rows": rows, "ok": n_ok, "summary": summary, "unsupported": n_num})
+
     model = llm.pick_model(key)
     use = llm.usage_label(model, total) or "토큰 정보 없음"
-    print(f"\n정답 {n_ok}/{len(rows)} ({summary})")
-    print(f"사용량: {use} · 문항당 평균 {sum(r['sec'] for r in rows) / max(len(rows), 1):.1f}초")
-    (HERE / "llm_results.json").write_text(json.dumps({"model": model, "usage": total, "rows": rows}, ensure_ascii=False, indent=1),
-                                           encoding="utf-8")
-    md = [f"# AI 분석가 평가 결과", "", f"모델 `{model}` · 정답 **{n_ok}/{len(rows)}** ({summary})", "", f"사용량: {use}", "",
-          "| # | 레벨 | 질문 | 판정 | 사유 | 사용한 도구 | 답변 (앞부분) |", "| --- | --- | --- | --- | --- | --- | --- |"]
-    for r in rows:
+    n = len(qs)
+    scores = [r["ok"] for r in runs]
+    per_q = {}
+    for run in runs:
+        for r in run["rows"]:
+            per_q.setdefault(r["id"], []).append(r)
+    unstable = [qid for qid, rs in per_q.items() if 0 < sum(x["ok"] for x in rs) < len(rs)]
+    always_bad = [qid for qid, rs in per_q.items() if not any(x["ok"] for x in rs)]
+    secs = [r["sec"] for run in runs for r in run["rows"]]
+    print("=" * 60)
+    print(f"정답 {' / '.join(str(s) for s in scores)} (각 {n}문항) · 평균 {sum(scores) / len(scores):.1f}/{n}")
+    if a.repeat > 1:
+        print(f"회차마다 결과가 달라진 문항: {', '.join(map(str, unstable)) or '없음'}")
+    print(f"매번 틀린 문항: {', '.join(map(str, always_bad)) or '없음'}")
+    print(f"사용량: {use} · 문항당 평균 {sum(secs) / max(len(secs), 1):.1f}초")
+
+    suffix = "" if a.set == "main" else f"_{a.set}"
+    (HERE / f"llm_results{suffix}.json").write_text(
+        json.dumps({"model": model, "set": a.set, "usage": total, "scores": scores, "runs": runs},
+                   ensure_ascii=False, indent=1, default=str), encoding="utf-8")
+    md = [f"# AI 분석가 평가 결과 ({a.set})", "", f"모델 `{model}` · 정답 **{' / '.join(map(str, scores))}** (각 {n}문항, {a.repeat}회)",
+          "", f"사용량: {use}", ""]
+    if a.repeat > 1:
+        md += [f"회차마다 달라진 문항: {', '.join(map(str, unstable)) or '없음'} · 매번 틀린 문항: {', '.join(map(str, always_bad)) or '없음'}", ""]
+    md += ["| # | 레벨 | 질문 | 정답 횟수 | 사유(마지막 회차) | 근거 없는 숫자 | 사용한 도구 | 답변 (앞부분) |",
+           "| --- | --- | --- | --- | --- | --- | --- | --- |"]
+    for qid, rs in per_q.items():
+        r = rs[-1]
         tools_ = "; ".join(f"{c['tool']}{json.dumps(c['params'], ensure_ascii=False)}" for c in r["calls"]) or "-"
         ans = r["answer"].replace("\n", " ").replace("|", "/")[:160]
-        md.append(f"| {r['id']} | {r['level']} | {r['q']} | {'O' if r['ok'] else 'X'} | {r['why']} | {tools_} | {ans} |")
-    (HERE / "llm_results.md").write_text("\n".join(md) + "\n", encoding="utf-8")
-    print("→ eval/llm_results.md 저장")
+        md.append(f"| {qid} | {r['level']} | {r['q']} | {sum(x['ok'] for x in rs)}/{len(rs)} | {r['why']} | "
+                  f"{', '.join(r['unsupported_numbers']) or '-'} | {tools_} | {ans} |")
+    (HERE / f"llm_results{suffix}.md").write_text("\n".join(md) + "\n", encoding="utf-8")
+    print(f"→ eval/llm_results{suffix}.md 저장")
 
 
 if __name__ == "__main__":
-    main(float(sys.argv[1]) if len(sys.argv) > 1 else None)
+    main()
