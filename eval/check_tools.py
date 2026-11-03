@@ -27,7 +27,7 @@ def has(facts, *needles):
 # 질문 번호 → (도구, 입력값, 확인 함수(결과, 정답) → 불일치 설명 또는 None)
 CHECKS = {
     1: ("get_kpis", AUG, lambda r, e: None if has(r["facts"], T.won(e["revenue"]), f"{e['변화율']*100:+.1f}%") else "매출·변화율"),
-    2: ("get_kpis", dict(start="2026-09-24", end="2026-10-01"),
+    2: ("get_kpis", dict(start="2026-09-28", end="2026-10-01"),
         lambda r, e: None if has(r["facts"], f"{e['orders']:,}건", f"{e['변화율']*100:+.1f}%") else "주문 수·변화율"),
     3: ("rank_items", SEP | dict(target="product", n=5),
         lambda r, e: None if list(r["table"]["상품"]) == [x["product_name"] for x in e["TOP5"]] else "TOP5 순서"),

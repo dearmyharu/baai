@@ -8,7 +8,9 @@
 
 기간 규칙 (데이터 마지막 날 2026-09-30 기준, 챗봇 답변 첫 줄에 기준 기간을 밝힌다)
 - 이번 달 = 2026-09,  지난달 = 2026-08,  비교 = 직전 같은 길이 기간
-- 이번 주 = 최근 7일(9/24~9/30),  최근 2주 = 9/17~9/30
+- 기준일(오늘) = 2026-09-30(수). 주는 달력 주(월~일, 결정 2026-11-03)
+- 이번 주 = 9/28(월)~9/30(수) (비교: 지난주 같은 요일 9/21~9/23),  지난주 = 9/21~9/27
+- 최근 N일·최근 2주 = 오늘까지 거꾸로 (최근 2주 = 9/17~9/30)
 - 기간이 없으면 이번 달(9월) 기준, 추이 질문은 전체 관측 기간(4~9월)
 """
 from __future__ import annotations
@@ -21,8 +23,8 @@ P = pd.Timestamp
 THIS_MONTH = (P("2026-09-01"), P("2026-10-01"))
 LAST_MONTH = (P("2026-08-01"), P("2026-09-01"))
 MONTH_BEFORE_LAST = (P("2026-07-01"), P("2026-08-01"))
-THIS_WEEK = (P("2026-09-24"), P("2026-10-01"))
-PREV_WEEK = (P("2026-09-17"), P("2026-09-24"))
+THIS_WEEK = (P("2026-09-28"), P("2026-10-01"))   # 달력 주: 9/28(월)~9/30(수)
+PREV_WEEK = (P("2026-09-21"), P("2026-09-24"))   # 지난주 같은 요일
 LAST_2W = (P("2026-09-17"), P("2026-10-01"))
 PREV_2W = (P("2026-09-03"), P("2026-09-17"))
 ALL = (P("2026-04-01"), P("2026-10-01"))
@@ -209,7 +211,7 @@ CASES = [
     # L1 조회
     dict(id=1, level="L1", q="지난달 매출 얼마야?", period="2026-08 (비교 2026-07)", tool="get_kpis", check=EXACT,
          expected=lambda m: _kpi(m, LAST_MONTH, MONTH_BEFORE_LAST, "revenue")),
-    dict(id=2, level="L1", q="이번 주 주문 몇 건이야?", period="9/24~9/30 (비교 9/17~9/23)", tool="get_kpis", check=EXACT,
+    dict(id=2, level="L1", q="이번 주 주문 몇 건이야?", period="9/28~9/30 (비교 지난주 같은 요일 9/21~9/23)", tool="get_kpis", check=EXACT,
          expected=lambda m: _kpi(m, THIS_WEEK, PREV_WEEK, "orders")),
     dict(id=3, level="L1", q="매출 제일 많이 나온 상품 TOP5는?", period="2026-09", tool="rank_items", check=RANK,
          expected=lambda m: {"TOP5": _rows(M.top_products(m, *THIS_MONTH, n=5), ["product_name", "category", "상품매출"])}),

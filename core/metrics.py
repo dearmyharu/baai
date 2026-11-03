@@ -30,9 +30,13 @@ def previous_period(start: pd.Timestamp, end: pd.Timestamp):
 def compare_period(start: pd.Timestamp, end: pd.Timestamp):
     """비교 기간 규칙(대시보드·챗봇 공통).
     - 달 단위로 딱 떨어지는 기간(예: 9/1~9/30)이면 직전 같은 개수의 달(8/1~8/31)
+    - 월요일에 시작하는 7일 이하 기간(달력 주, 예: 이번 주 9/28(월)~9/30(수))이면 지난주 같은 요일(9/21~9/23)
     - 그 밖에는 직전 같은 일수
     상세 데이터(4/1) 이전이면 None."""
     start, end = pd.Timestamp(start), pd.Timestamp(end)
+    if start.normalize() == start and start.weekday() == 0 and pd.Timedelta(days=1) <= end - start <= pd.Timedelta(days=7):
+        p_start = start - pd.Timedelta(days=7)
+        return None if p_start < PERIOD_START else (p_start, end - pd.Timedelta(days=7))
     if start.day == 1 and end.day == 1 and start.normalize() == start and end.normalize() == end:
         n = (end.year - start.year) * 12 + end.month - start.month
         if n >= 1:
