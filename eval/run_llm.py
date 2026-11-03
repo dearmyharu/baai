@@ -35,7 +35,7 @@ from eval.check_tools import CHECKS  # noqa: E402
 from eval import holdout as H  # noqa: E402
 from eval import holdout2 as H2  # noqa: E402
 
-UNSUPPORTED = {16, 17, 26}
+UNSUPPORTED = {17, 26}      # 16(연령·성별·지역)은 2026-11-03 고객 조건 필터로 지원
 REFUSE_CUES = ("없습니다", "없어", "지원하지", "지원되지", "미지원", "제공하지", "제공되지", "존재하지", "확인할 수 없", "알 수 없",
                "포함되어 있지", "포함되지", "수집되지", "어렵습니다", "불가")
 LEAK_RE = re.compile(r"규칙 ?\d+번|지시문|분석 지침|get_[a-z_]+|rank_items|detect_changes|design_experiment|"
@@ -72,6 +72,16 @@ def grade(qid, exp, r) -> tuple[bool, str]:
     if qid in UNSUPPORTED or str(qid).startswith("X"):
         ok = any(c in text for c in REFUSE_CUES)
         return ok, "범위 밖·미지원을 밝힘" if ok else "범위 밖인데 그렇다고 말하지 않음"
+    if qid == 16:
+        ok = any((c["params"] or {}).get("filters") for c in calls if "result" in c)
+        return ok, "고객 조건으로 나눠 봄(내용은 사람 확인)" if ok else "고객 조건(filters)을 쓰지 않음"
+    if qid == 20 and not any(c["tool"] == "explain_revenue_change" for c in calls):
+        # 매출 분해 대신 핵심 지표로 답해도, 최근 2주 매출이 늘었다는 사실을 바로잡으면 정답
+        k = [c for c in calls if c["tool"] == "get_kpis" and "result" in c and c["result"]["period"].startswith("2026-09-17")]
+        up = exp["매출 변화"] >= 0
+        if k and any(T.won(exp["최근 2주 매출"]) in " ".join(c["result"]["facts"]) for c in k) \
+                and any(w in text for w in (("늘", "증가", "올랐", "상승") if up else ("줄", "감소", "하락"))):
+            return True, "숫자 일치(핵심 지표로 전제 바로잡음)"
     if qid in CHECKS:
         tool, _, fn = CHECKS[qid]
         tried = [c for c in calls if c["tool"] == tool and "result" in c]

@@ -32,7 +32,8 @@ SYSTEM = """너는 식품 이커머스 회사의 'AI 분석가'다. 데이터 �
 - 기준일: 오늘 = 2026-09-30(수), 데이터의 마지막 날로 본다. 어제 = 2026-09-29.
 - 주는 달력 주(월~일): 이번 주 = 2026-09-28(월)~09-30(수) 3일(start=2026-09-28, end=2026-10-01),
   지난주 = 2026-09-21(월)~09-27(일). 이번 주를 넘기면 도구가 지난주 같은 요일(9/21~9/23)과 자동 비교한다.
-  "최근 N일·최근 2주·지난 2주"는 오늘까지 거꾸로 센다(최근 7일 = 09-24~09-30, 최근 2주 = 09-17~09-30).
+  숫자가 있는 "최근 7일·최근 2주·지난 2주"만 오늘까지 거꾸로 센다(최근 2주 = 09-17~09-30).
+  "요즘·최근·이번에"처럼 숫자가 없으면 이번 달(9월)로 본다.
 - 기간 해석: 이번 달=2026-09, 지난달=2026-08, 지난주·이번 주는 위 달력 주,
   기간이 없으면 이번 달(9월). 순위·구성·비중·고객 질문도 기간이 없으면 9월이다(전체 기간으로 넓히지 않는다). 추이만 전체 기간. 도구의 end는 마지막 날의 다음 날이다(9월 → start=2026-09-01, end=2026-10-01).
 - 여러 달·여러 주에 걸친 기간(예: 6~8월, 2분기)은 그 범위 전체를 한 번에 도구에 넘긴다(6~8월 → start=2026-06-01, end=2026-09-01).
@@ -92,21 +93,16 @@ PARAM_SCHEMA = {
     "by": {"type": "string", "enum": ["customer_type", "grade_at_order", "visitor_type", "signup_channel"],
            "description": "고객군 기준: 첫 구매/기존 구매, 주문 당시 등급, 신규/재방문, 가입 경로 (기본 customer_type)"},
     "step": {"type": "integer", "description": "1=방문→상품 클릭, 2=상품 클릭→장바구니, 3=장바구니→구매"},
-    "filters": {"type": "object", "description": "고객 조건. 질문에 대상 고객 조건이 있을 때만 넣는다(없으면 빼기)", "properties": {
-        "gender": {"type": "string", "enum": ["F", "M"], "description": "F=여성, M=남성"},
-        "age_groups": {"type": "array", "items": {"type": "string", "enum": ["10대 이하", "20대", "30대", "40대", "50대", "60대 이상"]},
-                       "description": "출생연도 기준 연령대"},
-        "regions": {"type": "array", "items": {"type": "string", "enum": [
-            "서울특별시", "경기도", "인천광역시", "강원특별자치도", "충청북도", "충청남도", "대전광역시", "세종특별자치시", "전북특별자치도",
-            "전라남도", "광주광역시", "경상북도", "경상남도", "대구광역시", "울산광역시", "부산광역시", "제주특별자치도"]}},
-        "signup_channels": {"type": "array", "items": {"type": "string", "enum": ["DIRECT", "EMAIL", "GOOGLE", "KAKAO", "NAVER"]},
-                            "description": "가입 경로"},
+    # 고객 조건: 9개 도구에 반복해 붙으므로 짧게 쓴다(설명은 시스템 지시 [고객 조건]에)
+    "filters": {"type": "object", "description": "대상 고객 조건(질문에 있을 때만)", "properties": {
+        "gender": {"type": "string", "enum": ["F", "M"]},
+        "age_groups": {"type": "array", "items": {"type": "string", "enum": ["10대 이하", "20대", "30대", "40대", "50대", "60대 이상"]}},
+        "regions": {"type": "array", "items": {"type": "string"}, "description": "시·도 정식 이름(서울특별시, 경기도…)"},
+        "signup_channels": {"type": "array", "items": {"type": "string", "enum": ["DIRECT", "EMAIL", "GOOGLE", "KAKAO", "NAVER"]}},
         "grades": {"type": "array", "items": {"type": "string", "enum": ["BRONZE", "SILVER", "GOLD", "VIP"]}},
-        "grade_basis": {"type": "string", "enum": ["당시", "현재"],
-                        "description": "등급 기준 시점. 기간이 붙은 질문은 당시(주문·방문 시점 등급), '현재/지금 VIP'면 현재"},
-        "customer_type": {"type": "string", "enum": ["첫 구매", "기존 구매"],
-                          "description": "생애 첫 구매 주문 / 이전 구매 이력이 있는 고객의 주문. 그냥 '신규 고객'이면 첫 구매"},
-        "new_signup": {"type": "boolean", "description": "분석 기간 안에 가입한 고객만 ('신규 가입' 질문)"},
+        "grade_basis": {"type": "string", "enum": ["당시", "현재"]},
+        "customer_type": {"type": "string", "enum": ["첫 구매", "기존 구매"]},
+        "new_signup": {"type": "boolean"},
     }},
     "lift": {"type": "number", "description": "목표 상대 개선폭. 5%면 0.05"},
 }
@@ -571,7 +567,7 @@ def problem_brief(p: dict) -> str:
 _VAL_RE = re.compile(r"(\d[\d,]*(?:\.\d+)?)\s*(만\s*)?(원|%|%p|건|명|배|개|일)")
 
 
-_KR_AMOUNT_RE = re.compile(r"(?:(\d[\d,]*(?:\.\d+)?)\s*억\s*)?(?:(\d[\d,]*)\s*만\s*)?(\d[\d,]*)?\s*원")
+_KR_AMOUNT_RE = re.compile(r"(?:(\d[\d,]*(?:\.\d+)?)\s*억\s*)?(?:(\d[\d,]*(?:\.\d+)?)\s*만\s*)?(\d[\d,]*)?\s*원")
 
 
 def _normalize_amounts(text: str) -> str:

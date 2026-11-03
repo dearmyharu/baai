@@ -139,7 +139,8 @@ def q19(m):
 def q20(m):
     d = M.revenue_decomposition(m, LAST_2W, PREV_2W)
     c = M.detect_changes(m, LAST_2W, PREV_2W, alpha=0.05)
-    return {"매출 변화": _r(d["revenue_change"]), "주문 수 효과": _r(d["order_effect"]), "객단가 효과": _r(d["aov_effect"]),
+    return {"매출 변화": _r(d["revenue_change"]), "최근 2주 매출": _r(M.kpis(m, *LAST_2W)["revenue"]),
+            "주문 수 효과": _r(d["order_effect"]), "객단가 효과": _r(d["aov_effect"]),
             "실제로 하락했는가": bool(d["revenue_change"] < 0),
             "함께 달라진 지표": [x["title"] for x in c[:5]],
             "주의": "매출이 늘었다면 질문의 전제를 바로잡아야 함. 원인은 가설로만"}
@@ -237,9 +238,9 @@ CASES = [
     dict(id=14, level="L2", q="큐레이션으로 들어온 고객이 일반 탐색보다 더 잘 사?", period="2026-09", tool="get_funnel",
          check=FACTS + ". 유의성(p값)과 '효과로 단정할 수 없음'을 함께 말해야 함", expected=q14),
     dict(id=15, level="L2", q="고객군마다 잘 팔리는 카테고리가 달라?", period="2026-09", tool="segment_preference", check=FACTS, expected=q15),
-    dict(id=16, level="L2", q="연령대나 성별, 지역에 따라 구매가 달라?", period="2026-09", tool="(미지원)", check=PARTIAL,
-         expected=lambda m: {"상태": "연령·성별·지역 컬럼은 customer 테이블에 있으나 분석 도구에 아직 연결 안 됨",
-                             "대체 안내": "방문 유형·첫 구매/기존·주문 당시 등급별 비교"}),
+    dict(id=16, level="L2", q="연령대나 성별, 지역에 따라 구매가 달라?", period="2026-09", tool="get_kpis 등 + filters", check=FACTS,
+         expected=lambda m: {"상태": "2026-11-03 고객 조건 필터 추가로 지원(이전: 미지원). 조건별로 도구를 나눠 불러 비교",
+                             "주의": "연령은 출생연도 기준 근사, 차이는 가설로만"}),
     dict(id=17, level="L2", q="무슨 요일, 몇 시에 주문이 많아?", period="2026-09", tool="(미지원)", check=PARTIAL,
          expected=lambda m: {"상태": "요일×시간대 주문 집계 도구 없음", "대체 안내": "테마·퍼널 구간을 평일/주말·시간대로 나눠 보기"}),
     dict(id=18, level="L2", q="첫 구매하고 다시 사기까지 얼마나 걸려?", period="전체 관측 기간", tool="get_retention", check=EXACT, expected=q18),

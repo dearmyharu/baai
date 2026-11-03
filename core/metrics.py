@@ -814,6 +814,8 @@ def rising_products(m: dict, cur: tuple, prev: tuple, n: int = 5, min_prev_order
 # - 신규 가입: 분석 기간 안에 가입한 고객(기간이 없으면 관측 기간 4/1 이후 가입)
 # ---------------------------------------------------------------------------
 AGE_GROUPS = ["10대 이하", "20대", "30대", "40대", "50대", "60대 이상"]
+REGIONS = ("서울특별시", "경기도", "인천광역시", "강원특별자치도", "충청북도", "충청남도", "대전광역시", "세종특별자치시",
+           "전북특별자치도", "전라남도", "광주광역시", "경상북도", "경상남도", "대구광역시", "울산광역시", "부산광역시", "제주특별자치도")
 GENDER_LABEL = {"F": "여성", "M": "남성"}
 FILTER_KEYS = ("gender", "age_groups", "regions", "signup_channels", "grades", "grade_basis", "customer_type", "new_signup")
 
@@ -848,6 +850,9 @@ def clean_filters(f: dict | None) -> dict:
     for k in ("age_groups", "regions", "signup_channels", "grades"):
         if k in f and isinstance(f[k], str):
             f[k] = [f[k]]
+    if "regions" in f:     # '서울', '부산시'처럼 줄여 쓴 지역은 시·도 정식 이름으로
+        names = list(REGIONS)
+        f["regions"] = [r if r in names else next((n for n in names if n.startswith(r[:2])), r) for r in f["regions"]]
     if "age_groups" in f and set(f["age_groups"]) - set(AGE_GROUPS):
         raise ValueError(f"연령대는 {', '.join(AGE_GROUPS)} 중에서 고릅니다.")
     if "gender" in f and f["gender"] not in GENDER_LABEL:
