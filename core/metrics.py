@@ -400,12 +400,12 @@ def category_sales(m: dict, start, end) -> pd.DataFrame:
     return cat
 
 
-def top_products(m: dict, start, end, n: int = 5) -> pd.DataFrame:
-    """상품매출 상위 n개 상품."""
+def top_products(m: dict, start, end, n: int = 5, sort: str = "상품매출") -> pd.DataFrame:
+    """상위 n개 상품. sort = 상품매출(기본) | 수량(판매 개수) | 구매고객."""
     it = completed_items(m, start, end)
     return (it.groupby(["product_name", "category"])
             .agg(상품매출=("net_sales", "sum"), 구매고객=("customer_id", "nunique"), 수량=("quantity", "sum"))
-            .sort_values("상품매출", ascending=False).head(n).reset_index())
+            .sort_values([sort, "상품매출"], ascending=False).head(n).reset_index())
 
 
 def category_performance(m: dict, start, end) -> pd.DataFrame:
@@ -802,3 +802,125 @@ def rising_products(m: dict, cur: tuple, prev: tuple, n: int = 5, min_prev_order
     df["매출 증가율"] = (df["상품매출"] - df["이전 상품매출"]) / df["이전 상품매출"]
     df["클릭 증가율"] = (df["클릭세션"] - df["이전 클릭세션"]) / df["이전 클릭세션"].replace(0, np.nan)
     return df.sort_values("매출 증가율", ascending=False).head(n).reset_index()
+
+
+# ---------------------------------------------------------------------------
+# 고객 조건 필터 (AI 분석가의 조합 질문: "여성 30대 6월 VIP 고객의 TOP5" 등)
+# 정의 (결정 2026-11-03)
+# - 연령: 출생연도 기준 나이(기준 연도 2026 - 출생연도). 생일이 없어 근사치이며, 관측 기간이 한 해 안이라
+#   주문 당시 나이와 현재 나이가 같다. 출생연도 없는 고객은 연령 조건에서 빠진다.
+# - 등급: grade_basis="당시"면 주문·방문 시점 등급(등급 변경 이력), "현재"면 데이터 마지막 날 등급
+# - 첫 구매/기존 구매: 주문 단위(생애 첫 완료 구매 여부, 관측 이전 이력 포함). 방문 분석에는 적용 불가
+# - 신규 가입: 분석 기간 안에 가입한 고객(기간이 없으면 관측 기간 4/1 이후 가입)
+# ---------------------------------------------------------------------------
+AGE_GROUPS = ["10대 이하", "20대", "30대", "40대", "50대", "60대 이상"]
+GENDER_LABEL = {"F": "여성", "M": "남성"}
+FILTER_KEYS = ("gender", "age_groups", "regions", "signup_channels", "grades", "grade_basis", "customer_type", "new_signup")
+
+
+def customer_attrs(m: dict) -> pd.DataFrame:
+    """고객별 속성: 성별, 출생연도 기준 나이·연령대, 지역, 가입 경로, 현재 등급, 가입일."""
+    from .data import AS_OF
+    c = m["raw"]["customer"].set_index("customer_id")
+    age = AS_OF.year - c["birth_year"]
+    out = c[["gender", "region", "signup_channel", "membership_grade", "signup_date"]].copy()
+    out["age"] = age
+    out["age_group"] = pd.cut(age, [0, 19, 29, 39, 49, 59, 200], labels=AGE_GROUPS).astype(object)
+    return out
+
+
+def _grade_at(m: dict, df: pd.DataFrame, time_col: str) -> pd.Series:
+    """df의 각 행(customer_id, time_col)의 그 시점 등급 (등급 변경 이력 as-of)."""
+    gh = m["raw"]["customer_grade_history"].sort_values("effective_from")
+    x = df[["customer_id", time_col]].reset_index().sort_values(time_col)
+    x = pd.merge_asof(x, gh[["customer_id", "effective_from", "effective_to", "membership_grade"]],
+                      left_on=time_col, right_on="effective_from", by="customer_id", direction="backward")
+    ok = x["effective_to"].isna() | (x[time_col] < x["effective_to"])
+    return x.set_index("index")["membership_grade"].where(ok).reindex(df.index)
+
+
+def clean_filters(f: dict | None) -> dict:
+    """빈 값 제거·형식 정리. 모르는 키나 값이면 ValueError (LLM에게 그대로 돌려줘 고치게 한다)."""
+    f = {k: v for k, v in (f or {}).items() if v not in (None, "", [], False)}
+    bad = [k for k in f if k not in FILTER_KEYS]
+    if bad:
+        raise ValueError(f"지원하지 않는 고객 조건: {', '.join(bad)}. 가능한 조건: {', '.join(FILTER_KEYS)}")
+    for k in ("age_groups", "regions", "signup_channels", "grades"):
+        if k in f and isinstance(f[k], str):
+            f[k] = [f[k]]
+    if "age_groups" in f and set(f["age_groups"]) - set(AGE_GROUPS):
+        raise ValueError(f"연령대는 {', '.join(AGE_GROUPS)} 중에서 고릅니다.")
+    if "gender" in f and f["gender"] not in GENDER_LABEL:
+        raise ValueError("성별은 F(여성) 또는 M(남성)입니다.")
+    if "customer_type" in f and f["customer_type"] not in ("첫 구매", "기존 구매"):
+        raise ValueError("customer_type은 '첫 구매' 또는 '기존 구매'입니다.")
+    if "grades" in f:
+        f.setdefault("grade_basis", "당시")
+    elif "grade_basis" in f:
+        f.pop("grade_basis")
+    return f
+
+
+def describe_filters(f: dict, period=None) -> str:
+    """'여성 · 30대(출생연도 기준) · 9월 당시 VIP' 같은 대상 설명."""
+    parts = []
+    if "gender" in f:
+        parts.append(GENDER_LABEL[f["gender"]])
+    if "age_groups" in f:
+        parts.append("/".join(f["age_groups"]) + "(출생연도 기준)")
+    if "regions" in f:
+        parts.append("/".join(f["regions"]))
+    if "signup_channels" in f:
+        parts.append("가입 경로 " + "/".join(f["signup_channels"]))
+    if "grades" in f:
+        parts.append(("현재 " if f["grade_basis"] == "현재" else "당시 ") + "/".join(f["grades"]) + " 등급")
+    if "customer_type" in f:
+        parts.append(f"{f['customer_type']} 고객(생애 기준)")
+    if f.get("new_signup"):
+        parts.append("기간 내 신규 가입 고객" if period else "관측 기간(4/1~) 신규 가입 고객")
+    return " · ".join(parts)
+
+
+def filter_mart(m: dict, f: dict | None, period=None) -> tuple[dict, dict]:
+    """고객 조건에 맞는 주문·주문상품·방문·이벤트만 남긴 mart 사본. 모든 지표 함수를 그대로 쓸 수 있다.
+    반환: (mart, info) info = {"filters", "label", "sessions_ok"(방문 분석 가능 여부)}"""
+    f = clean_filters(f)
+    if not f:
+        return m, {"filters": {}, "label": "", "sessions_ok": True}
+    cust = customer_attrs(m)
+    mask = pd.Series(True, index=cust.index)
+    if "gender" in f:
+        mask &= cust["gender"].eq(f["gender"])
+    if "age_groups" in f:
+        mask &= cust["age_group"].isin(f["age_groups"])
+    if "regions" in f:
+        mask &= cust["region"].isin(f["regions"])
+    if "signup_channels" in f:
+        mask &= cust["signup_channel"].isin(f["signup_channels"])
+    if "grades" in f and f["grade_basis"] == "현재":
+        mask &= cust["membership_grade"].isin(f["grades"])
+    if f.get("new_signup"):
+        s0, e0 = period if period else (PERIOD_START, observation_end())
+        mask &= (cust["signup_date"] >= s0) & (cust["signup_date"] < e0)
+    ids = set(cust.index[mask])
+
+    o = m["orders"][m["orders"]["customer_id"].isin(ids)]
+    if "grades" in f and f["grade_basis"] == "당시":
+        o = o[o["grade_at_order"].isin(f["grades"])]
+    if "customer_type" in f:
+        o = o[o["customer_type"].eq(f"{f['customer_type']} 고객")]
+    it = m["items"][m["items"]["order_id"].isin(o["order_id"])]
+
+    s = m["sessions"][m["sessions"]["customer_id"].isin(ids)]
+    if "grades" in f and f["grade_basis"] == "당시":
+        s = s[_grade_at(m, s, "start").isin(f["grades"])]
+    sessions_ok = "customer_type" not in f          # 첫 구매/기존은 주문 단위라 방문에는 적용할 수 없다
+    if not sessions_ok:
+        s = s.iloc[0:0]
+
+    raw = dict(m["raw"])
+    raw["customer"] = m["raw"]["customer"][m["raw"]["customer"]["customer_id"].isin(ids)]
+    ev = m["raw"]["event_log"]
+    raw["event_log"] = ev[ev["session_id"].isin(s["session_id"])]
+    return {**m, "raw": raw, "orders": o, "items": it, "sessions": s}, \
+        {"filters": f, "label": describe_filters(f, period), "sessions_ok": sessions_ok}

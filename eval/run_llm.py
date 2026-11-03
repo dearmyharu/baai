@@ -33,6 +33,7 @@ from core.data import build_all  # noqa: E402
 from eval.cases import CASES, OUT_OF_SCOPE  # noqa: E402
 from eval.check_tools import CHECKS  # noqa: E402
 from eval import holdout as H  # noqa: E402
+from eval import holdout2 as H2  # noqa: E402
 
 UNSUPPORTED = {16, 17, 26}
 REFUSE_CUES = ("없습니다", "없어", "지원하지", "지원되지", "미지원", "제공하지", "제공되지", "존재하지", "확인할 수 없", "알 수 없",
@@ -87,12 +88,27 @@ def grade(qid, exp, r) -> tuple[bool, str]:
     return ok, "기대 도구 사용(내용은 사람 확인)" if ok else f"기대 도구 {'/'.join(sorted(want))} 미사용 (사용: {', '.join(used) or '없음'})"
 
 
+HYPO_CUES = ("가설", "확정할 수 없", "단정", "알 수 없", "추정", "확인할 수 없", "데이터만으로는", "직접 알 수", "알기 어렵")
+
+
 def grade_holdout(c, exp, r) -> tuple[bool, str]:
+    ok, why = _grade_holdout(c, exp, r)
+    if ok and c.get("text_fn"):
+        need = c["text_fn"](exp)
+        if not any(w in r["text"] for w in need):
+            return False, f"답변에 필요한 표현 없음(예: {', '.join(w for w in need if w)[:40]})"
+    return ok, why
+
+
+def _grade_holdout(c, exp, r) -> tuple[bool, str]:
     calls, text = r["calls"], r["text"]
     used = [x["tool"] for x in calls]
     leak = sorted(set(LEAK_RE.findall(text)))
     if leak:
         return False, f"내부 지시문·도구 이름 노출: {', '.join(leak)}"
+    if c["kind"] == "hypo":
+        ok = any(x in text for x in HYPO_CUES + REFUSE_CUES)
+        return ok, "확정할 수 없음·가설임을 밝힘" if ok else "원인을 단정함(가설·한계 표시 없음)"
     if c["kind"] == "refuse":
         ok = any(x in text for x in REFUSE_CUES)
         return ok, "범위 밖·미지원을 밝힘" if ok else "범위 밖인데 그렇다고 말하지 않음"
@@ -117,34 +133,9 @@ def grade_holdout(c, exp, r) -> tuple[bool, str]:
 # ---------------------------------------------------------------------------
 # 엄격 확인: 답변 속 숫자가 도구 결과에 있는가
 # ---------------------------------------------------------------------------
-_DATE_RE = re.compile(r"\d{4}\s*[-./년]\s*\d{1,2}\s*[-./월]\s*\d{1,2}\s*일?|\d{1,2}\s*월\s*\d{1,2}\s*일|\d{4}\s*년|\d{1,2}\s*월")
-
-
-def _evidence(calls) -> str:
-    parts = []
-    for c in calls:
-        if "result" not in c:
-            continue
-        s = llm.summarize(c["result"])
-        parts += [s["title"], s["period"], *s["facts"], *s.get("notes", [])]
-        for row in s.get("table_head", []):
-            for v in row.values():
-                if isinstance(v, (int, float)) and not isinstance(v, bool):
-                    if abs(v) <= 1.5:
-                        parts.append(f"{v * 100:.4f}% {v * 100:.4f}%p")
-                    parts.append(" ".join(f"{v}{u}" for u in ("원", "건", "명", "개", "일", "배")))
-    return "\n".join(parts)
-
-
-_COUNT_RE = re.compile(r"^(\d{1,2})\s*(개|일)$")
-
-
 def unsupported_numbers(r) -> list[str]:
-    """답변 속 숫자 중 도구 결과에 없는 것. '3개', '7일'처럼 항목 개수·기간 길이를 말하는 작은 수는 제외."""
-    if not r["calls"]:
-        return []
-    bad = llm.unverified_numbers(_DATE_RE.sub(" ", r["text"]), _evidence(r["calls"]))
-    return [b for b in bad if not (_COUNT_RE.match(b.strip()) and int(_COUNT_RE.match(b.strip()).group(1)) <= 90)]
+    """답변 속 숫자 중 도구 결과에 없는 것 (llm.unsupported_in_answer: 앱 화면 경고와 같은 기준)."""
+    return llm.unsupported_in_answer(r["text"], r["calls"])
 
 
 # ---------------------------------------------------------------------------
@@ -156,8 +147,11 @@ def questions(which, m):
         exp = {c["id"]: c["expected"](m) for c in CASES}
         out += [(c["id"], c["level"], c["q"], (lambda r, qid=c["id"]: grade(qid, exp.get(qid), r))) for c in CASES]
         out += [(x["id"], "범위 밖", x["q"], (lambda r, qid=x["id"]: grade(qid, None, r))) for x in OUT_OF_SCOPE]
-    if which in ("holdout", "all"):
-        for c in H.ALL_CASES:
+    sets = {"holdout": H.ALL_CASES, "holdout2": H2.ALL_CASES}
+    for name, cases in sets.items():
+        if which not in (name, "all"):
+            continue
+        for c in cases:
             e = c["expected"](m) if c["kind"] == "check" else None
             out.append((c["id"], c["level"], c["q"], (lambda r, c=c, e=e: grade_holdout(c, e, r))))
     return out
@@ -203,7 +197,7 @@ def summarize_run(rows):
 def main():
     import argparse
     ap = argparse.ArgumentParser()
-    ap.add_argument("--set", default="main", choices=["main", "holdout", "all"])
+    ap.add_argument("--set", default="main", choices=["main", "holdout", "holdout2", "all"])
     ap.add_argument("--repeat", type=int, default=1)
     ap.add_argument("--delay", type=float, default=None)
     a = ap.parse_args()

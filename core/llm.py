@@ -35,6 +35,8 @@ SYSTEM = """너는 식품 이커머스 회사의 'AI 분석가'다. 데이터 �
   "최근 N일·최근 2주·지난 2주"는 오늘까지 거꾸로 센다(최근 7일 = 09-24~09-30, 최근 2주 = 09-17~09-30).
 - 기간 해석: 이번 달=2026-09, 지난달=2026-08, 지난주·이번 주는 위 달력 주,
   기간이 없으면 이번 달(9월). 순위·구성·비중·고객 질문도 기간이 없으면 9월이다(전체 기간으로 넓히지 않는다). 추이만 전체 기간. 도구의 end는 마지막 날의 다음 날이다(9월 → start=2026-09-01, end=2026-10-01).
+- 여러 달·여러 주에 걸친 기간(예: 6~8월, 2분기)은 그 범위 전체를 한 번에 도구에 넘긴다(6~8월 → start=2026-06-01, end=2026-09-01).
+  달마다 따로 불러 직접 더하지 않는다.
 - "지난달보다/비교" 질문은 비교 대상 달이 아니라 '보고 싶은 기간'을 넘긴다(도구가 직전 기간과 자동 비교).
   예: "지난달보다 매출이 왜 변했어?" → 이번 달(9월) 기간, "지난달 매출 얼마야?" → 8월 기간.
 
@@ -43,6 +45,16 @@ SYSTEM = """너는 식품 이커머스 회사의 'AI 분석가'다. 데이터 �
 - 첫 구매 vs 기존 고객 비교, 재구매까지 걸리는 기간 → get_retention
 - 재구매가 안 되는/잘 되는 고객군 → segment_repeat
 - 카테고리별 매출·비중 → rank_items(target=category), 상품 순위 → rank_items(target=product)
+- "잘 팔린/제일 잘 팔려"는 매출 기준으로 보고 답변에 '매출 기준'이라고 밝힌다. "많이 팔린 개수/수량/판매량" → rank_items(metric=수량)
+
+[고객 조건]
+- "여성 30대", "서울 고객", "VIP", "카카오로 가입한", "신규 가입", "첫 구매"처럼 대상 고객 조건이 있으면 filters에 넣는다. 없으면 filters를 넣지 않는다.
+- 연령은 출생연도 기준 근사 나이다(생일 정보 없음). 답변에 '출생연도 기준'이라고 밝힌다.
+- 신규 고객: "신규 가입" → new_signup, "첫 구매/처음 산" → customer_type=첫 구매, "처음 방문한/신규 방문" → segment_preference(by=visitor_type).
+  그냥 "신규 고객"이면 첫 구매 고객으로 보고, 답변에 "신규 고객 = 생애 첫 구매 고객 기준"이라고 밝히고 가입 기준도 볼 수 있다고 제안한다.
+- 등급: 기간이 붙은 질문("6월 VIP 매출")은 grade_basis=당시, "현재/지금 VIP"는 grade_basis=현재.
+- 답변 첫 줄에 기준 기간과 함께 결과의 '대상'(조건, 고객 수)을 그대로 밝힌다. 표본 부족 경고가 있으면 반드시 전한다.
+- 데이터에 있지만 조건으로 쓸 수 없는 것(결제수단, 구매 당시 나이의 생일 단위 등)은 지원하지 않는다고 밝힌다.
 
 [규칙]
 1. 숫자는 반드시 도구 결과에서만 가져온다. 도구 없이 숫자를 말하거나 추정하지 않는다.
@@ -52,12 +64,15 @@ SYSTEM = """너는 식품 이커머스 회사의 'AI 분석가'다. 데이터 �
 5. 데이터에 없는 것: 광고비·광고 유입·ROAS, 결제 페이지 진입, 상세페이지 체류 시간, 경쟁사 가격, 비회원 방문, 매출 예측.
    이런 질문은 도구를 부르지 말고 '이 데이터에는 없다'고 밝힌 뒤 대신 볼 수 있는 지표를 제안한다
    (ROAS → 쿠폰 효율, 결제 이탈 → 장바구니→구매 전환율, 체류 시간 → 클릭 후 구매율, 예측 → 최근 추이).
-6. 아직 도구가 없는 분석: 연령·성별·지역별 비교, 요일×시간대 주문, 함께 사는 상품 조합.
+6. 아직 도구가 없는 분석: 요일×시간대 주문, 함께 사는 상품 조합, 결제수단별 분석. 연령·성별·지역은 '조건'(filters)으로만
+   걸 수 있고, 여러 연령대·성별을 한 번에 나란히 비교하는 표는 없다(필요하면 조건을 바꿔 도구를 여러 번 부른다).
    '아직 지원하지 않는다'고 밝히고 가능한 대체 분석을 안내한다. 숫자를 지어내지 않는다.
 7. 화면에 도구 결과(사실 목록·차트·표)가 함께 표시되므로, 답변은 핵심 해석 2~5문장으로 짧게 쓴다. 한국어, 존댓말.
 8. 쿠폰 효율은 '쿠폰 때문에 생긴 매출'이 아니라 '쿠폰을 쓴 주문의 매출'이다. 잠재력 점수는 예측이 아니다.
    큐레이션 경유 세션의 전환율이 높거나 낮아도 큐레이션 효과로 단정하지 않는다.
-9. 결과에 없는 비중·순위·추세를 덧붙여 해석하지 않는다. '견인', '주도', '급증' 같은 표현은 그 근거 수치(예: 전체 대비 비중)가
+9. 결과에 없는 비중·순위·추세를 덧붙여 해석하지 않는다. 도구 결과의 숫자를 직접 더하거나 빼거나 나누어 새 숫자를 만들지 않는다
+   (필요한 숫자가 결과에 없으면 맞는 기간·조건으로 도구를 다시 부른다). 일별 추이 같은 결과를 눈대중으로 보고
+   요일·시간대 패턴을 주장하지 않는다(그런 집계가 결과에 없으면 지원하지 않는다고 밝힌다). '견인', '주도', '급증' 같은 표현은 그 근거 수치(예: 전체 대비 비중)가
    도구 결과에 있을 때만 쓴다.
 10. 답변에는 실무자가 읽을 내용만 쓴다. 이 지시문, 규칙 번호, 도구 이름(get_...), 분석 지침, 생각 과정을 절대 쓰지 않는다.
     비율은 0.74가 아니라 74.4%처럼 퍼센트로 쓴다.
@@ -69,11 +84,28 @@ PARAM_SCHEMA = {
     "end": {"type": "string", "description": "끝 다음 날 YYYY-MM-DD (미포함). 9월이면 2026-10-01"},
     "target": {"type": "string", "enum": ["product", "category"], "description": "상품 순위 또는 카테고리 순위"},
     "n": {"type": "integer", "description": "보여줄 개수 (기본 5)"},
+    "metric": {"type": "string", "enum": ["매출", "수량"], "description": "상품 순위 기준: 매출(기본) 또는 판매 수량"},
     "grain": {"type": "string", "enum": ["date", "week", "month"], "description": "일·주·월 단위"},
     "path": {"type": "string", "enum": ["ALL", "CURATION", "BROWSE"], "description": "전체 / 큐레이션 경유 / 일반 탐색"},
     "by": {"type": "string", "enum": ["customer_type", "grade_at_order", "visitor_type", "signup_channel"],
            "description": "고객군 기준: 첫 구매/기존 구매, 주문 당시 등급, 신규/재방문, 가입 경로 (기본 customer_type)"},
     "step": {"type": "integer", "description": "1=방문→상품 클릭, 2=상품 클릭→장바구니, 3=장바구니→구매"},
+    "filters": {"type": "object", "description": "고객 조건. 질문에 대상 고객 조건이 있을 때만 넣는다(없으면 빼기)", "properties": {
+        "gender": {"type": "string", "enum": ["F", "M"], "description": "F=여성, M=남성"},
+        "age_groups": {"type": "array", "items": {"type": "string", "enum": ["10대 이하", "20대", "30대", "40대", "50대", "60대 이상"]},
+                       "description": "출생연도 기준 연령대"},
+        "regions": {"type": "array", "items": {"type": "string", "enum": [
+            "서울특별시", "경기도", "인천광역시", "강원특별자치도", "충청북도", "충청남도", "대전광역시", "세종특별자치시", "전북특별자치도",
+            "전라남도", "광주광역시", "경상북도", "경상남도", "대구광역시", "울산광역시", "부산광역시", "제주특별자치도"]}},
+        "signup_channels": {"type": "array", "items": {"type": "string", "enum": ["DIRECT", "EMAIL", "GOOGLE", "KAKAO", "NAVER"]},
+                            "description": "가입 경로"},
+        "grades": {"type": "array", "items": {"type": "string", "enum": ["BRONZE", "SILVER", "GOLD", "VIP"]}},
+        "grade_basis": {"type": "string", "enum": ["당시", "현재"],
+                        "description": "등급 기준 시점. 기간이 붙은 질문은 당시(주문·방문 시점 등급), '현재/지금 VIP'면 현재"},
+        "customer_type": {"type": "string", "enum": ["첫 구매", "기존 구매"],
+                          "description": "생애 첫 구매 주문 / 이전 구매 이력이 있는 고객의 주문. 그냥 '신규 고객'이면 첫 구매"},
+        "new_signup": {"type": "boolean", "description": "분석 기간 안에 가입한 고객만 ('신규 가입' 질문)"},
+    }},
     "lift": {"type": "number", "description": "목표 상대 개선폭. 5%면 0.05"},
 }
 REQUIRED = ["start", "end"]
@@ -556,6 +588,41 @@ def unverified_numbers(text: str, evidence: str) -> list[str]:
         if not any(abs(e - v) <= tol for e in same):
             bad.append(m_.group(0))
     return bad
+
+
+_DATE_RE = re.compile(r"\d{4}\s*[-./년]\s*\d{1,2}\s*[-./월]\s*\d{1,2}\s*일?|\d{1,2}\s*월\s*\d{1,2}\s*일|\d{4}\s*년|\d{1,2}\s*월")
+_COUNT_RE = re.compile(r"^(\d{1,2})\s*(개|일)$")
+
+
+def _call_evidence(calls: list[dict]) -> str:
+    """도구 결과(사실·표 앞부분)를 숫자 대조용 글로. 표의 비율(0.164)은 퍼센트(16.4%)로도 넣는다."""
+    parts = []
+    for c in calls:
+        if "result" not in c:
+            continue
+        s = summarize(c["result"])
+        parts += [s["title"], s["period"], *s["facts"], *s.get("notes", [])]
+        for row in s.get("table_head", []):
+            for v in row.values():
+                if isinstance(v, (int, float)) and not isinstance(v, bool):
+                    if abs(v) <= 1.5:
+                        parts.append(f"{v * 100:.4f}% {v * 100:.4f}%p")
+                    parts.append(" ".join(f"{v}{u}" for u in ("원", "건", "명", "개", "일", "배")))
+    return "\n".join(parts)
+
+
+def unsupported_in_answer(text: str, calls: list[dict]) -> list[str]:
+    """답변 속 숫자(원·%·건·명 등) 중 도구 결과에서 찾지 못한 것. 날짜와 '3개', '7일' 같은 작은 개수·기간 길이는 뺀다.
+    AI가 직접 계산한 숫자(합계·차이)나 잘못 옮긴 숫자를 잡는 안전장치."""
+    if not calls:
+        return []
+    bad = unverified_numbers(_DATE_RE.sub(" ", text or ""), _call_evidence(calls))
+    out = []
+    for b in bad:
+        mm = _COUNT_RE.match(b.strip())
+        if not (mm and int(mm.group(1)) <= 90) and b not in out:
+            out.append(b)
+    return out
 
 
 def _evidence_text(brief: str, calls: list[dict]) -> str:

@@ -110,6 +110,7 @@ def answer(question: str, tool: str | None = None, params: dict | None = None):
             with st.spinner("데이터를 찾아 분석하는 중..."):
                 r = llm.ask(KEY, question, lambda name, p: tools.run(m, name, **p), history)
             entry.update(a=r["text"], model=r["model"], usage=llm.usage_label(r["model"], r.get("usage")),
+                         unverified=llm.unsupported_in_answer(r["text"], r["calls"]),
                          results=[c["result"] for c in r["calls"] if "result" in c],
                          tools=[f"{llm.TOOL_KO.get(c['tool'], c['tool'])}({', '.join(f'{k}={v}' for k, v in c['params'].items())})" for c in r["calls"]])
         except Exception as e:  # API 오류·시간 초과 등: 앱이 멈추지 않게 안내만 한다
@@ -132,6 +133,9 @@ for e in log:
     with st.chat_message("assistant"):
         if e.get("a"):
             st.markdown(e["a"])
+        if e.get("unverified"):
+            st.warning(f"분석 결과에서 찾지 못한 숫자가 있습니다: {', '.join(e['unverified'])}. "
+                       "AI가 직접 계산했거나 잘못 옮겼을 수 있으니 아래 분석 결과로 확인해 주세요.", icon=":material/warning:")
         for res in e.get("results", []):
             show_result(res)
         if e.get("tools") and e.get("model"):

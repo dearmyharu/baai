@@ -86,7 +86,10 @@ def get_kpis(m, start, end, compare=True):
             ("쿠폰 사용 주문 비중", pct(k["coupon_order_share"]), chg(k["coupon_order_share"], g("coupon_order_share"), True)),
             ("취소·환불 비중", pct(k["cancel_refund_rate"]), chg(k["cancel_refund_rate"], g("cancel_refund_rate"), True))]
     facts = [f"{a} {b}{c}" for a, b, c in rows]
-    table = M.order_status_summary(m, *cur).rename(columns={"order_status": "주문 상태"})
+    st_ = M.order_status_summary(m, *cur)
+    facts.append(f"주문 접수(취소·환불 포함 전체) {int(st_['주문수'].sum()):,}건, 결제 금액 {won(st_['금액'].sum())} "
+                 "(완료 매출은 이 중 완료 주문만)")
+    table = st_.rename(columns={"order_status": "주문 상태"})
     return _result("핵심 지표", plabel, facts, None, table,
                    ["완료 매출은 배송비 포함 결제 금액(회계 순매출 아님)", "재구매 고객 비중은 기간이 짧을수록 낮게 나옴"])
 
@@ -107,7 +110,7 @@ def get_coupon_efficiency(m, start, end):
                     "ROAS는 광고비·광고 유입 데이터가 없어 계산할 수 없음"])
 
 
-def rank_items(m, start, end, target="product", n=5):
+def rank_items(m, start, end, target="product", n=5, metric="매출"):
     cur = _period(start, end)
     if target == "category":
         df = M.category_sales(m, *cur).rename(columns={"category": "카테고리", "net_sales": "상품매출"})
@@ -115,11 +118,15 @@ def rank_items(m, start, end, target="product", n=5):
         chart = {"kind": "bar", "data": df, "x": "상품매출", "y": "카테고리", "x_fmt": "~s"}
         title = "카테고리별 매출"
     else:
-        df = M.top_products(m, *cur, n=n).rename(columns={"product_name": "상품", "category": "카테고리"})
-        facts = [f"{i+1}위 {r.상품} ({r.카테고리}): {won(r.상품매출)}, 구매 고객 {r.구매고객:,}명" for i, r in enumerate(df.itertuples())]
-        chart = {"kind": "bar", "data": df, "x": "상품매출", "y": "상품", "x_fmt": "~s"}
-        title = f"상품매출 TOP {n}"
-    return _result(title, _label(cur), facts, chart, df, ["상품매출 = 완료 주문의 쿠폰 차감 후 상품금액(배송비 제외)"])
+        qty = metric == "수량"
+        df = M.top_products(m, *cur, n=n, sort="수량" if qty else "상품매출").rename(
+            columns={"product_name": "상품", "category": "카테고리"})
+        facts = [f"{i+1}위 {r.상품} ({r.카테고리}): " + (f"판매 수량 {r.수량:,}개, 상품매출 {won(r.상품매출)}" if qty else
+                 f"{won(r.상품매출)}, 구매 고객 {r.구매고객:,}명") for i, r in enumerate(df.itertuples())]
+        chart = {"kind": "bar", "data": df, "x": "수량" if qty else "상품매출", "y": "상품", "x_fmt": "," if qty else "~s"}
+        title = f"{'판매 수량' if qty else '상품매출'} TOP {n}"
+    return _result(title, _label(cur), facts, chart, df, ["상품매출 = 완료 주문의 쿠폰 차감 후 상품금액(배송비 제외)",
+                                                          "기준을 밝히지 않은 '잘 팔린'은 매출 기준. 판매 개수 기준은 metric=수량"])
 
 
 def explain_revenue_change(m, start, end):
@@ -320,17 +327,63 @@ class Tool:
 
 
 PERIOD = {"start": "시작일 YYYY-MM-DD", "end": "끝 다음 날 YYYY-MM-DD (미포함)"}
+FILTERS = {"filters": "고객 조건(성별·연령대·지역·가입 경로·등급·첫 구매/기존·신규 가입). 질문에 조건이 있을 때만"}
 
-TOOLS = {t.name: t for t in [
+SESSION_TOOLS = {"get_funnel"}                       # 방문 단위 분석: 첫 구매/기존(주문 단위) 조건 불가
+CUSTOMER_LEVEL_TOOLS = {"segment_repeat", "get_segments"}   # 고객의 구매 이력 전체를 보는 분석: 주문 단위 조건 불가
+
+
+def with_filters(name: str, fn: Callable) -> Callable:
+    """도구에 고객 조건(filters)을 붙인다: 조건에 맞는 데이터만 남긴 mart로 같은 계산을 하고,
+    사실 목록 맨 앞에 '대상: …(구매 고객 N명)'을 넣는다. 대상이 30명 미만이면 표본 부족 경고."""
+    def run(m, filters=None, **params):
+        cur = _period(params["start"], params["end"]) if params.get("start") and params.get("end") else None
+        m2, info = M.filter_mart(m, filters, cur)
+        f = info["filters"]
+        if not f:
+            return fn(m, **params)
+        if name in SESSION_TOOLS and not info["sessions_ok"]:
+            raise ValueError("첫 구매/기존 구매 조건은 주문 단위라 방문·퍼널 분석에는 쓸 수 없습니다. "
+                             "다른 조건만 넣거나 주문 기준 분석(매출·순위)을 쓰세요.")
+        if name in CUSTOMER_LEVEL_TOOLS and ("customer_type" in f or f.get("grade_basis") == "당시"):
+            raise ValueError("이 분석은 고객의 구매 이력 전체를 보므로 첫 구매/기존 구매나 '당시' 등급 조건을 쓸 수 없습니다. "
+                             "등급은 grade_basis='현재'로, 첫 구매/기존은 고객군 기준(by)으로 나눠 보세요.")
+        if f.get("new_signup"):
+            if name in ("explain_revenue_change", "detect_changes"):
+                raise ValueError("신규 가입 고객은 직전 기간에 아직 가입 전이라 직전 기간과 비교할 수 없습니다.")
+            if name == "get_kpis":
+                params["compare"] = False
+        res = fn(m2, **params)
+        if name in SESSION_TOOLS:
+            s = m2["sessions"] if cur is None else M.in_period(m2["sessions"], "start", *cur)
+            n, unit = s["customer_id"].nunique(), "방문 고객"
+        else:
+            o = M.completed_orders(m2, *(cur or (None, None)))
+            n, unit = o["customer_id"].nunique(), "구매 고객"
+        warn = " - 30명 미만이라 결과가 우연에 크게 좌우될 수 있음(표본 부족)" if n < 30 else ""
+        res["facts"].insert(0, f"대상: {info['label']} ({'기간 내 ' if cur else ''}{unit} {n:,}명){warn}")
+        res["title"] += f" · {info['label']}"
+        res["notes"] = res.get("notes", []) + [
+            "연령은 출생연도 기준 근사 나이(생일 정보 없음). 성별·출생연도가 없는 고객은 해당 조건에서 빠짐"]
+        return res
+    run.__name__ = fn.__name__
+    return run
+
+
+FILTERABLE = {"get_kpis", "get_coupon_efficiency", "rank_items", "explain_revenue_change", "get_trend", "get_funnel",
+              "segment_preference", "segment_repeat", "get_segments"}
+
+_TOOL_LIST = [
     Tool("get_kpis", "기간의 핵심 지표(매출·주문·고객·객단가·전환율·재구매·쿠폰·취소환불)와 직전 기간 대비 변화. "
          "'지난달 매출', '이번 주 주문 수', '객단가', '구매 고객 수', '취소·환불' 질문",
          PERIOD, get_kpis, [1, 2, 5, 6, 9]),
     Tool("get_coupon_efficiency", "쿠폰 할인액 대비 쿠폰 사용 주문 매출(쿠폰 효율)과 쿠폰별 효율. ROAS 대신 쓰는 지표",
          PERIOD, get_coupon_efficiency, [8]),
-    Tool("rank_items", "상품 또는 카테고리 상품매출 순위·비중. 기간 언급이 없으면 이번 달(9월)", PERIOD | {"target": "product | category", "n": "개수"}, rank_items, [3, 4]),
+    Tool("rank_items", "상품 또는 카테고리 상품매출 순위·비중. 기간 언급이 없으면 이번 달(9월). 상품은 판매 수량(metric=수량) 순위도 가능",
+         PERIOD | {"target": "product | category", "n": "개수", "metric": "매출 | 수량"}, rank_items, [3, 4]),
     Tool("explain_revenue_change", "직전 기간 대비 완료 매출 변화를 주문 수 효과와 객단가 효과로 분해하고 함께 달라진 지표 제시",
          PERIOD, explain_revenue_change, [10, 20]),
-    Tool("get_trend", "완료 매출·주문 수 추이", PERIOD | {"grain": "date | week | month"}, get_trend, [11]),
+    Tool("get_trend", "완료 매출·주문 수 추이. 기간 언급이 없으면 전체 기간(start=2026-04-01, end=2026-10-01)", PERIOD | {"grain": "date | week | month"}, get_trend, [11]),
     Tool("get_funnel", "방문→상품 클릭→장바구니→구매 퍼널과 가장 많이 빠지는 구간. 큐레이션 경유 vs 일반 탐색의 "
          "세션 구매 전환율 비교와 유의성도 항상 포함하므로 경로 비교 질문도 path=ALL로 한 번만 부른다",
          PERIOD | {"path": "ALL | CURATION | BROWSE"}, get_funnel, [13, 14, 28]),
@@ -353,7 +406,14 @@ TOOLS = {t.name: t for t in [
          design_experiment, [30]),
     Tool("find_potential_products", "매출은 낮지만 관심·구매 의향·전환·성장 지표가 좋은 상품(키울 후보)과 뜨는 상품",
          PERIOD | {"n": "개수"}, find_potential_products, [21, 23]),
-]}
+]
+
+# 고객 조건을 받을 수 있는 도구에는 filters 입력을 붙이고 실행 함수를 감싼다
+for _t in _TOOL_LIST:
+    if _t.name in FILTERABLE:
+        _t.params = _t.params | FILTERS
+        _t.fn = with_filters(_t.name, _t.fn)
+TOOLS = {t.name: t for t in _TOOL_LIST}
 
 
 def run(m, name: str, **params) -> dict:
