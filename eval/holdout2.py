@@ -238,7 +238,8 @@ CASES = [
     dict(id="V21", period=YDAY, level="C 모름", q="어제 매출이 왜 감소했어?", kind="check", expected=decomposition(YDAY),
          checks=[("explain_revenue_change", fact_won("매출")), ("get_kpis", fact_won("매출"))],
          params=("explain_revenue_change", d(YDAY)),
-         text_fn=lambda e: ["늘", "증가", "올랐", "상승"] if e["변화"] > 0 else ["줄", "감소", "떨어", "하락"]),
+         text_fn=lambda e: (["매출이 늘", "매출은 늘", "늘었", "증가했", "증가한", "올랐", "상승", "감소하지 않", "오히려", "전제"]
+                            if e["변화"] > 0 else ["줄", "감소", "떨어", "하락"])),
     # D. KPI 정의 (기준 2)
     dict(id="V22", period=AUG, level="D 정의", q="지난달 매출액과 주문 수 알려줘.", kind="check", expected=revenue(AUG),
          checks=[("get_kpis", lambda r, e: ok_if(has(r, T.won(e["매출"]), f"{e['주문']:,}건"), "완료 매출·주문 수 불일치"))],
@@ -260,7 +261,9 @@ CASES = [
     dict(id="V27", period=SEP, level="E 일반화", q="이번 달 매출은 늘었는데 구매자 수는 줄었다면 왜 그런 거야?", kind="check",
          expected=decomposition(SEP),
          checks=[("explain_revenue_change", fact_won("매출")), ("get_kpis", fact_won("매출"))], params=("explain_revenue_change", d(SEP)),
-         text_fn=lambda e: (["줄", "감소", "떨어", "하락"] if e["변화"] < 0 else [""])),
+         text_fn=lambda e: (["매출이 줄", "매출은 줄", "매출이 감소", "매출은 감소", "매출이 떨어", "매출은 떨어", "매출이 하락",
+                             "매출은 하락", "늘지 않", "늘어나지 않", "증가하지 않", "오히려", "전제", "사실과 다"]
+                            if e["변화"] < 0 else [""])),      # 전제(매출 증가)가 틀렸음을 바로잡아야
     dict(id="V28", period=SEP, level="E 일반화", q="클릭은 많이 되는데 구매로는 잘 안 이어지는 테마 찾아줘.", kind="check", expected=themes(SEP),
          checks=[("get_themes", lambda r, e: ok_if(all(t in " ".join(r["facts"]) for t in e["관심↑ 구매↓"]), "관심↑ 구매↓ 테마 불일치"))],
          params=("get_themes", d(SEP))),
