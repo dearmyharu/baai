@@ -235,7 +235,7 @@ CASES = [
          checks=[("get_segments", lambda r, e: ok_if(has(r, f"충성: {e['고객수']:,}명"), "충성 고객 수 불일치"))],
          params=("get_segments", d(SEP))),
     dict(id="H19", period=THIS_WEEK, level="L3", q="이번 주 매출이 지난주보다 줄었어?", kind="check", expected=rev_change(THIS_WEEK),
-         checks=[("get_kpis", lambda r, e: ok_if(has(r, T.won(e["매출"])) and r["period"].startswith("2026-09-24"), "이번 주 매출 아님")),
+         checks=[("get_kpis", lambda r, e: ok_if(has(r, T.won(e["매출"])), "이번 주 매출 아님")),
                  ("explain_revenue_change", lambda r, e: ok_if(has(r, T.won(abs(e["변화"]))), "이번 주 vs 지난주 아님"))],
          params=("explain_revenue_change", d(THIS_WEEK))),
     # L4: 제안

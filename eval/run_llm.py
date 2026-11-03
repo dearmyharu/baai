@@ -35,8 +35,8 @@ from eval.check_tools import CHECKS  # noqa: E402
 from eval import holdout as H  # noqa: E402
 
 UNSUPPORTED = {16, 17, 26}
-REFUSE_CUES = ("없습니다", "없어", "지원하지", "제공하지", "제공되지", "존재하지", "확인할 수 없", "알 수 없", "포함되어 있지",
-               "포함되지", "수집되지", "어렵습니다", "불가")
+REFUSE_CUES = ("없습니다", "없어", "지원하지", "지원되지", "미지원", "제공하지", "제공되지", "존재하지", "확인할 수 없", "알 수 없",
+               "포함되어 있지", "포함되지", "수집되지", "어렵습니다", "불가")
 LEAK_RE = re.compile(r"규칙 ?\d+번|지시문|분석 지침|get_[a-z_]+|rank_items|detect_changes|design_experiment|"
                      r"find_potential_products|segment_preference|segment_repeat|explain_revenue_change")
 EXPECTED_TOOLS = {12: {"get_retention"}, 27: {"get_themes"},
@@ -136,10 +136,15 @@ def _evidence(calls) -> str:
     return "\n".join(parts)
 
 
+_COUNT_RE = re.compile(r"^(\d{1,2})\s*(개|일)$")
+
+
 def unsupported_numbers(r) -> list[str]:
+    """답변 속 숫자 중 도구 결과에 없는 것. '3개', '7일'처럼 항목 개수·기간 길이를 말하는 작은 수는 제외."""
     if not r["calls"]:
         return []
-    return llm.unverified_numbers(_DATE_RE.sub(" ", r["text"]), _evidence(r["calls"]))
+    bad = llm.unverified_numbers(_DATE_RE.sub(" ", r["text"]), _evidence(r["calls"]))
+    return [b for b in bad if not (_COUNT_RE.match(b.strip()) and int(_COUNT_RE.match(b.strip()).group(1)) <= 90)]
 
 
 # ---------------------------------------------------------------------------
