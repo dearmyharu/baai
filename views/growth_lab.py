@@ -85,7 +85,7 @@ with st.container(border=True):
     a1, a2 = st.columns([3, 1])
     a1.markdown("**AI 초안** · AI가 데이터 도구로 근거를 확인한 뒤 가설·전략(ICE)·실험 설계 초안을 씁니다.")
     if not AKEY:
-        a1.caption("Secrets에 GEMINI_API_KEY를 넣으면 쓸 수 있습니다.")
+        a1.caption("Secrets에 OPENAI_API_KEY를 넣으면 쓸 수 있습니다.")
     elif a2.button("AI 초안 만들기", key=f"mk_{pid}", icon=":material/auto_awesome:", use_container_width=True):
         try:
             with st.spinner("근거 데이터를 확인하고 초안을 쓰는 중... (20~40초)"):

@@ -1,7 +1,7 @@
-"""AI 분석가(Gemini) 평가: 평가셋 36문항을 실제로 물어보고 채점한다.
+"""AI 분석가(GPT 또는 Gemini) 평가: 평가셋 36문항을 실제로 물어보고 채점한다.
 
 dashboard 폴더에서:  python eval/run_llm.py   (또는 eval_llm.bat 더블클릭)
-키: .streamlit/secrets.toml 또는 환경변수 GEMINI_API_KEY
+키: .streamlit/secrets.toml 또는 환경변수 OPENAI_API_KEY (없으면 GEMINI_API_KEY)
 결과: eval/llm_results.md (사람이 읽는 표), eval/llm_results.json
 
 채점 기준
@@ -39,14 +39,21 @@ EXPECTED_TOOLS = {12: {"get_retention"}, 27: {"get_themes"},
 
 
 def load_key() -> str:
-    k = os.getenv("GEMINI_API_KEY", "")
+    """OPENAI_API_KEY가 있으면 GPT, 없으면 GEMINI_API_KEY (환경변수 → .streamlit/secrets.toml 순)."""
     f = ROOT / ".streamlit" / "secrets.toml"
-    if not k and f.exists():
-        m = re.search(r'^\s*GEMINI_API_KEY\s*=\s*"([^"]*)"', f.read_text(encoding="utf-8"), re.M)
-        k = m.group(1) if m else ""
-    if not k or "붙여넣기" in k:
-        sys.exit("GEMINI_API_KEY를 찾지 못했습니다. .streamlit/secrets.toml을 확인해 주세요.")
-    return k.strip()
+    text = f.read_text(encoding="utf-8") if f.exists() else ""
+    for name in ("OPENAI_API_KEY", "GEMINI_API_KEY"):
+        k = os.getenv(name, "")
+        if not k:
+            m = re.search(rf'^\s*{name}\s*=\s*"([^"]*)"', text, re.M)
+            k = m.group(1) if m else ""
+        if k and "붙여넣기" not in k:
+            for mn in ("OPENAI_MODEL", "GEMINI_MODEL"):     # secrets.toml의 모델 고정도 반영
+                mm = re.search(rf'^\s*{mn}\s*=\s*"([^"]*)"', text, re.M)
+                if mm and not os.getenv(mn):
+                    os.environ[mn] = mm.group(1)
+            return k.strip()
+    sys.exit("OPENAI_API_KEY(또는 GEMINI_API_KEY)를 찾지 못했습니다. .streamlit/secrets.toml을 확인해 주세요.")
 
 
 def grade(qid, exp, r) -> tuple[bool, str]:
@@ -75,10 +82,12 @@ def grade(qid, exp, r) -> tuple[bool, str]:
     return ok, "기대 도구 사용(내용은 사람 확인)" if ok else f"기대 도구 {'/'.join(sorted(want))} 미사용 (사용: {', '.join(used) or '없음'})"
 
 
-def main(delay: float = 7.0):
+def main(delay: float | None = None):
     key = load_key()
+    if delay is None:   # Gemini 무료 등급은 분당 한도가 낮아 간격을 둔다
+        delay = 1.0 if llm.provider(key) == "openai" else 7.0
     m = build_all()
-    print(f"시작 모델: {llm.pick_model(key)} (거절되면 자동 교체)\n")
+    print(f"시작 모델: {llm.pick_model(key)} ({llm.provider(key)}, 거절되면 자동 교체)\n")
     exp = {c["id"]: c["expected"](m) for c in CASES}
     qs = [(c["id"], c["level"], c["q"]) for c in CASES] + [(x["id"], "범위 밖", x["q"]) for x in OUT_OF_SCOPE]
     rows = []
@@ -123,4 +132,4 @@ def main(delay: float = 7.0):
 
 
 if __name__ == "__main__":
-    main(float(sys.argv[1]) if len(sys.argv) > 1 else 7.0)
+    main(float(sys.argv[1]) if len(sys.argv) > 1 else None)

@@ -1,8 +1,9 @@
-"""AI 분석가의 두뇌: Gemini API(Google AI Studio)로 질문 → 도구 선택 → 답변.
+"""AI 분석가의 두뇌: GPT(OpenAI) 또는 Gemini(Google AI Studio)로 질문 → 도구 선택 → 답변.
 
 - 숫자는 LLM이 만들지 않는다. LLM은 core/tools.py 도구를 고르고 기간을 채우며, 도구 결과를 근거로 짧게 설명한다.
 - 외부 패키지 없이 표준 라이브러리(urllib)로 REST API를 부른다.
-- 키: Streamlit Secrets 또는 환경변수 GEMINI_API_KEY. 모델: GEMINI_MODEL(없으면 사용 가능한 Flash 모델 자동 선택).
+- 키: Streamlit Secrets 또는 환경변수. OPENAI_API_KEY가 있으면 GPT(OpenAI 부분은 core/llm_openai.py),
+  없으면 GEMINI_API_KEY로 Gemini. 모델: OPENAI_MODEL / GEMINI_MODEL(없으면 가장 가벼운 모델 자동 선택).
 """
 from __future__ import annotations
 
@@ -184,13 +185,34 @@ def _setting(name: str) -> str:
 
 
 def api_key() -> str | None:
-    """GEMINI_API_KEY (Secrets 또는 환경변수). 예시 문구 그대로면 없는 것으로 본다."""
-    v = _setting("GEMINI_API_KEY")
-    return v if v and "붙여넣기" not in v else None
+    """AI 키 (Secrets 또는 환경변수). OPENAI_API_KEY가 있으면 GPT, 없으면 GEMINI_API_KEY로 Gemini.
+    예시 문구('붙여넣기')가 그대로면 없는 것으로 본다."""
+    for name in ("OPENAI_API_KEY", "GEMINI_API_KEY"):
+        v = _setting(name)
+        if v and "붙여넣기" not in v:
+            return v
+    return None
+
+
+def provider(key: str) -> str:
+    """'openai' 또는 'gemini'. OpenAI 키는 sk- 로 시작한다."""
+    return "openai" if key and (key.startswith("sk-") or key == _setting("OPENAI_API_KEY")) else "gemini"
+
+
+def model_setting(key: str) -> str:
+    """모델을 고정할 때 쓰는 Secrets 이름."""
+    return "OPENAI_MODEL" if provider(key) == "openai" else "GEMINI_MODEL"
+
+
+def _openai():
+    from . import llm_openai
+    return llm_openai
 
 
 def text_models(key: str) -> list[str]:
     """이 키로 쓸 수 있는 텍스트 생성 모델 (실험·미리보기 제외)."""
+    if provider(key) == "openai":
+        return _openai().text_models(key)
     d = _call(key, "models?pageSize=200")
     names = [m["name"].split("/", 1)[1] for m in d.get("models", [])
              if "generateContent" in m.get("supportedGenerationMethods", [])]
@@ -215,7 +237,10 @@ def candidates(key: str) -> list[str]:
 
 
 def pick_model(key: str) -> str:
-    """GEMINI_MODEL이 있으면 그 모델. 없으면 이 키로 실제로 쓸 수 있는 가장 낮은(가벼운) Flash 계열 모델."""
+    """GEMINI_MODEL이 있으면 그 모델. 없으면 이 키로 실제로 쓸 수 있는 가장 낮은(가벼운) Flash 계열 모델.
+    OpenAI 키면 OPENAI_MODEL 또는 가장 가벼운 등급(nano → mini)의 최신 GPT."""
+    if provider(key) == "openai":
+        return _openai().pick_model(key)
     fixed = _setting("GEMINI_MODEL")
     if fixed:
         return fixed
@@ -312,6 +337,13 @@ def _first(d: dict) -> list[dict]:
 
 def _tool_loop(key: str, system: str, contents: list[dict], run_tool: Callable[[str, dict], dict],
                model: str, steps: int = MAX_STEPS) -> dict:
+    if provider(key) == "openai":
+        return _openai().tool_loop(key, system, contents, run_tool, model, steps)
+    return _tool_loop_gemini(key, system, contents, run_tool, model, steps)
+
+
+def _tool_loop_gemini(key: str, system: str, contents: list[dict], run_tool: Callable[[str, dict], dict],
+                      model: str, steps: int = MAX_STEPS) -> dict:
     """모델이 도구를 부르면 실행해 결과를 돌려주기를 반복. 도구 없이 숫자를 말하면 도구 호출을 강제해 다시 묻는다.
     반환: {"text", "calls": [{"tool", "params", "result" 또는 "error"}], "model"}"""
     body = _new_body(system, contents, model)
@@ -488,10 +520,13 @@ def draft(key: str, problem: dict, run_tool: Callable[[str, dict], dict], model:
     evidence = _evidence_text(brief, calls)
     facts = "\n".join(f"- {f}" for c in calls if "result" in c for f in c["result"]["facts"])
     prompt = f"[문제]\n{brief}\n\n[근거: 데이터 도구 결과]\n{facts or '(도구 결과 없음)'}\n\n[근거 정리]\n{g['text']}"
-    body = _new_body(DRAFT_WRITE, [{"role": "user", "parts": [{"text": prompt}]}], model, tools=False)
-    body["generationConfig"].update(responseMimeType="application/json", responseSchema=DRAFT_SCHEMA)
-    d, model = _generate_any(key, model, body)
-    raw = "".join(p.get("text", "") for p in _first(d).get("parts") or [] if not p.get("thought")).strip()
+    if provider(key) == "openai":
+        raw, model = _openai().json_call(key, model, DRAFT_WRITE, prompt, DRAFT_SCHEMA, "growth_lab_draft")
+    else:
+        body = _new_body(DRAFT_WRITE, [{"role": "user", "parts": [{"text": prompt}]}], model, tools=False)
+        body["generationConfig"].update(responseMimeType="application/json", responseSchema=DRAFT_SCHEMA)
+        d, model = _generate_any(key, model, body)
+        raw = "".join(p.get("text", "") for p in _first(d).get("parts") or [] if not p.get("thought")).strip()
     raw = re.sub(r"^```(?:json)?|```$", "", raw).strip()
     try:
         out = json.loads(raw)

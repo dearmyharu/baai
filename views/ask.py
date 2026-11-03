@@ -1,6 +1,6 @@
 """⓪ AI 분석가: 궁금한 것을 물으면 데이터를 찾아 차트로 보여준다.
 
-GEMINI_API_KEY가 있으면: 질문 → Gemini가 도구(core/tools.py)와 기간을 고름 → 도구 실행 → Gemini가 결과를 근거로 설명.
+OPENAI_API_KEY(또는 GEMINI_API_KEY)가 있으면: 질문 → AI가 도구(core/tools.py)와 기간을 고름 → 도구 실행 → AI가 결과를 근거로 설명.
 키가 없으면: 예시 질문 버튼만 정해진 도구를 바로 실행한다.
 """
 import altair as alt
@@ -18,7 +18,7 @@ st.caption("궁금한 것을 물어보면 데이터를 찾아 숫자와 차트�
 KEY = llm.api_key()
 if not KEY:
     st.info("AI 모델이 아직 연결되지 않았습니다. 지금은 아래 **예시 질문**에 답할 수 있어요. "
-            "Secrets에 GEMINI_API_KEY를 넣으면 자유롭게 질문할 수 있습니다.", icon=":material/info:")
+            "Secrets에 OPENAI_API_KEY를 넣으면 자유롭게 질문할 수 있습니다.", icon=":material/info:")
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def model_list(key: str) -> list[str]:
@@ -31,9 +31,9 @@ if KEY:
     except Exception as e:  # 목록 조회 실패해도 화면은 계속 (다음 화면 갱신 때 다시 시도)
         cur_model, all_models = f"(확인 실패: {e})", []
     with st.expander(f"AI 모델: {cur_model}", icon=":material/tune:"):
-        st.markdown("기본은 이 키로 쓸 수 있는 **가장 낮은(가벼운) Flash 모델**을 자동으로 고릅니다. "
+        st.markdown("기본은 이 키로 쓸 수 있는 **가장 가벼운 등급의 모델**(GPT는 nano, Gemini는 Flash-Lite)을 자동으로 고릅니다. "
                     "다른 모델을 쓰려면 Streamlit Secrets에 아래 한 줄을 추가하고 앱을 다시 시작하세요.")
-        st.code(f'GEMINI_MODEL = "{cur_model}"', language="toml")
+        st.code(f'{llm.model_setting(KEY)} = "{cur_model}"', language="toml")
         if all_models:
             st.caption("이 키로 쓸 수 있는 모델: " + ", ".join(all_models))
 
