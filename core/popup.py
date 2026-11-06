@@ -1,6 +1,7 @@
-"""AI 분석가 답변 → '대시보드로 보기' 팝업.
+"""AI 분석가 답변 → 질문 대시보드.
 
-챗봇이 부른 도구의 기간·고객 조건을 그대로 받아, 그 질문에 맞는 작은 대시보드를 팝업(st.dialog)으로 띄운다.
+챗봇이 부른 도구의 기간·고객 조건을 그대로 받아, 그 질문에 맞는 대시보드를 왼쪽 화면 자리에 띄운다
+(답변이 나오면 자동으로 열림, 오른쪽 채팅 패널은 그대로). app.py가 render()를 부른다.
 - 숫자는 전부 core/metrics.py 함수가 만든다(대시보드 화면·챗봇 도구와 같은 함수). AI가 만든 숫자는 없다.
 - 기간: 도구가 서로 다른 두 기간을 불렀으면(예: 9월, 8월을 따로) 늦은 쪽 = 분석 기간, 이른 쪽 = 비교 기간.
   한 기간만 불렀으면 비교 기간 규칙(metrics.compare_period)으로 비교 기간을 정한다.
@@ -188,20 +189,28 @@ def _go_to_overview(cur):
         st.session_state.period_mode = "직접 선택"
         st.session_state.period_range = (s.date(), (e - pd.Timedelta(days=1)).date())
     st.session_state.period_compare = True
+    st.session_state.active_dash = None
     st.session_state.goto_overview = True
 
 
 # ---------------------------------------------------------------------------
 # 팝업
 # ---------------------------------------------------------------------------
-@st.dialog("질문 대시보드", width="large")
-def open_dashboard(m, spec: dict, question: str, results: list[dict], key: str):
+def close():
+    st.session_state.active_dash = None
+
+
+def render(m, spec: dict, question: str, key: str):
     cur, prev, f = spec["cur"], spec["prev"], spec["filters"]
     cur_l = short_label(cur)
     prev_l = short_label(prev) if prev is not None else None
     if prev_l == cur_l:
         cur_l, prev_l = f"분석 {cur_l}", f"비교 {prev_l}"
 
+    h1, h2 = st.columns([5, 1], vertical_alignment="center")
+    h1.title("질문 대시보드")
+    h2.button("닫기", icon=":material/close:", key=f"close_{key}", on_click=close, use_container_width=True,
+              help="원래 보던 화면으로 돌아갑니다. 답변 아래 '대시보드 다시 보기'로 다시 열 수 있어요.")
     m2, info = M.filter_mart(m, f, cur) if f else (m, {"label": ""})
     st.markdown(f"**질문** · {question}")
     st.caption(f"분석 기간 {ui.period_label(cur)} · 비교 기간 {ui.period_label(prev)}"
@@ -250,17 +259,9 @@ def open_dashboard(m, spec: dict, question: str, results: list[dict], key: str):
         st.markdown("##### 상품매출 TOP 10")
         _top_products(m2, cur, prev)
 
-    if results:
-        from .chat import show_result     # chat이 이 모듈을 불러오므로 여기서 불러온다
-        with st.expander("이 질문에 AI가 쓴 분석 결과"):
-            for res in results:
-                show_result(res)
-
     st.divider()
     a, b = st.columns([3, 2], vertical_alignment="center")
     a.caption("숫자는 모두 대시보드 화면과 같은 계산 함수로 만든 값입니다. AI가 직접 만든 숫자는 없습니다.")
     if not f:
         b.button("이 기간으로 통합 현황 열기", icon=":material/dashboard:", key=f"goto_{key}",
                  on_click=_go_to_overview, args=(cur,), use_container_width=True)
-    if st.session_state.pop("goto_overview", False):
-        st.switch_page("views/overview.py")

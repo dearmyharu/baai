@@ -138,6 +138,12 @@ def _answer(m, key, log: list, question: str, tool: str | None = None, params: d
     else:
         entry.update(_run_direct(m, tool, params or {}))
     log.append(entry)
+    if popup.spec_from_calls(entry.get("calls")):
+        st.session_state.active_dash = len(log) - 1      # 답변이 나오면 왼쪽에 대시보드를 바로 띄운다
+
+
+def _show_dash(i: int):
+    st.session_state.active_dash = i
 
 
 def _model_settings(key):
@@ -168,6 +174,7 @@ def render(m):
                 _model_settings(key)
             if log and st.button("대화 지우기", icon=":material/delete:", use_container_width=True):
                 log.clear()
+                st.session_state.active_dash = None
                 st.rerun()
             ui.note("이번 달 = 2026년 9월, 지난달 = 8월로 해석합니다(데이터 마지막 날 기준). "
                     "숫자는 모두 대시보드와 같은 계산 함수로 만듭니다. 원인·대책은 데이터로 확인된 사실이 아니라 가설입니다.")
@@ -197,10 +204,13 @@ def render(m):
                     for j, res in enumerate(e.get("results", [])):
                         show_result(res)
                         save_to_lab(e, res, key=f"lab_{i}_{j}")
-                    spec = popup.spec_from_calls(e.get("calls"))
-                    if spec and st.button("대시보드로 보기", key=f"dash_{i}", icon=":material/dashboard:",
-                                          help="이 질문의 기간·조건으로 지표·추이·카테고리·상품 순위를 한 화면에 띄웁니다."):
-                        popup.open_dashboard(m, spec, e["q"], e.get("results", []), key=f"dash_{i}")
+                    if popup.spec_from_calls(e.get("calls")):
+                        if st.session_state.get("active_dash") == i:
+                            st.caption(":material/arrow_back: 왼쪽에 이 질문의 대시보드를 띄웠습니다.")
+                        else:
+                            st.button("대시보드 다시 보기", key=f"dash_{i}", icon=":material/dashboard:",
+                                      on_click=_show_dash, args=(i,),
+                                      help="이 질문의 기간·조건으로 만든 대시보드를 왼쪽 화면에 띄웁니다.")
                     if e.get("clarify") and e is log[-1]:
                         for j, lab in enumerate(e["clarify"]):
                             if st.button(lab, key=f"clar_{len(log)}_{j}", use_container_width=True):
