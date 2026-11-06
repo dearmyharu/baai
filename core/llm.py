@@ -89,7 +89,9 @@ SYSTEM = """너는 식품 이커머스 회사의 'AI 분석가'다. 데이터 �
 # 질문 답변의 칸 (결정 2026-11-06): 모델은 칸만 채우고 화면 모양은 코드(core/chat.py)가 정한다.
 # OpenAI는 JSON schema로 강제, Gemini는 지시만(JSON이 아니면 글 그대로 보여 준다).
 ANSWER_SCHEMA = {"type": "object", "properties": {
-    "conclusion": {"type": "string", "description": "질문에 대한 답 한 문장(60자 안팎). 기준 기간 포함. 조건이 있으면 대상도. "
+    "conclusion": {"type": "string", "description": "질문에 대한 답 한 문장(50자 이내). 기준 기간 포함. 조건이 있으면 대상도. "
+                                                    "항목·숫자를 나열하지 않는다(나열은 evidence에). "
+                                                    "예: '지난주(9/21~9/27) 매출이 줄어든 상품은 23개예요.' "
                                                     "데이터에 없거나 지원하지 않으면 그렇다고"},
     "evidence": {"type": "array", "items": {"type": "string"},
                  "description": "결론의 근거 숫자 0~3개. 각 30자 안팎 '지표 값 (변화)'. 도구 결과의 숫자 그대로"},
@@ -102,7 +104,8 @@ ANSWER_SCHEMA = {"type": "object", "properties": {
 ANSWER_FORMAT = """
 [답변 칸]
 최종 답변은 conclusion, evidence, hypothesis, notice, next_questions 칸을 채운 JSON 하나로만 낸다(다른 글 없이).
-결론은 질문에 대한 답 한 문장, 근거는 숫자 최대 3개, 가설·주의는 필요할 때만 한 문장씩.
+결론은 질문에 대한 답 한 문장(50자 이내, 나열 금지), 근거는 숫자 최대 3개, 가설·주의는 필요할 때만 한 문장씩.
+기간은 '9/21~9/27'처럼 쓴다.
 """
 
 
@@ -145,7 +148,7 @@ PARAM_SCHEMA = {
     "end": {"type": "string", "description": "끝 다음 날 YYYY-MM-DD (미포함). 9월이면 2026-10-01"},
     "target": {"type": "string", "enum": ["product", "category"], "description": "상품별 또는 카테고리별"},
     "direction": {"type": "string", "enum": ["down", "up"], "description": "down = 줄어든 순(기본), up = 늘어난 순"},
-    "n": {"type": "integer", "description": "보여줄 개수 (기본 5)"},
+    "n": {"type": "integer", "description": "보여줄 개수. 질문에 개수(TOP5, 3개 등)가 있을 때만 넣는다"},
     "metric": {"type": "string", "enum": ["매출", "수량"], "description": "기준: 매출(기본) 또는 판매 수량"},
     "grain": {"type": "string", "enum": ["date", "week", "month"], "description": "일·주·월 단위"},
     "path": {"type": "string", "enum": ["ALL", "CURATION", "BROWSE"], "description": "전체 / 큐레이션 경유 / 일반 탐색"},

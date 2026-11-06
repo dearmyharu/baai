@@ -149,7 +149,8 @@ def explain_revenue_change(m, start, end):
                    None, ["원인은 이 분해만으로 확정할 수 없음. 함께 달라진 지표는 '확인할 후보'"])
 
 
-def compare_items(m, start, end, target="product", direction="down", n=5, metric="매출"):
+def compare_items(m, start, end, target="product", direction="down", n=None, metric="매출"):
+    """n이 없으면(질문에 개수가 없으면) 해당 방향 항목 전부. 사실 문장은 앞 10개까지만, 나머지는 표에."""
     cur, prev, plabel = _with_prev(start, end)
     if prev is None:
         raise ValueError("비교할 직전 기간이 데이터 범위(4/1~) 밖입니다.")
@@ -160,14 +161,18 @@ def compare_items(m, start, end, target="product", direction="down", n=5, metric
     unit = "판매 수량" if qty else "상품매출"
     fmt = (lambda v: f"{v:,.0f}개") if qty else won
     down = direction != "up"
-    sel = (df[df["변화"] < 0].sort_values("변화") if down else df[df["변화"] > 0].sort_values("변화", ascending=False)).head(int(n))
+    sel = df[df["변화"] < 0].sort_values("변화") if down else df[df["변화"] > 0].sort_values("변화", ascending=False)
+    if n:
+        sel = sel.head(int(n))
     name = (lambda r: f"{r.product_name} ({r.category})") if target == "product" else (lambda r: r.category)
     facts = [f"비교: {_label(prev)} → {_label(cur)}, 같은 {obj} 두 기간에 맞대어 {unit} 비교",
              f"{unit}이 줄어든 {what} {int((df['변화'] < 0).sum()):,}개, 늘어난 {what} {int((df['변화'] > 0).sum()):,}개 "
              f"(두 기간 중 한 번이라도 팔린 {len(df):,}개 중)"]
-    for i, r in enumerate(sel.itertuples()):
+    for i, r in enumerate(sel.head(10).itertuples()):
         rate = "" if pd.isna(r.변화율) else f", {r.변화율 * 100:+.1f}%"
         facts.append(f"{i+1}위 {name(r)}: {fmt(r.이전)} → {fmt(r.현재)} ({'+' if r.변화 > 0 else ''}{fmt(r.변화)}{rate})")
+    if len(sel) > 10:
+        facts.append(f"외 {len(sel) - 10:,}개 {what}은 표에 있음 (전체 {len(sel):,}개)")
     if sel.empty:
         facts.append(f"{unit}이 {'줄어든' if down else '늘어난'} {what}이 없습니다.")
     label_col = "product_name" if target == "product" else "category"
@@ -181,8 +186,15 @@ def compare_items(m, start, end, target="product", direction="down", n=5, metric
              f"{'감소' if down else '증가'}{'량' if qty else '액'}이 큰 순. 비교 기간에 안 팔린 {what}은 변화율 없음"]
     if not qty:
         notes.append("상품매출 = 완료 주문의 쿠폰 차감 후 상품금액(배송비 제외)")
-    title = f"{unit}이 {'줄어든' if down else '늘어난'} {what} TOP {int(n)}"
-    return _result(title, plabel, facts, chart, table, notes)
+    disp = table.copy()
+    for c in (f"비교 기간 {unit}", f"분석 기간 {unit}"):
+        disp[c] = disp[c].map(fmt)
+    disp["변화"] = disp["변화"].map(lambda v: ("+" if v > 0 else "") + fmt(v))
+    disp["변화율"] = disp["변화율"].map(lambda v: "–" if pd.isna(v) else f"{v * 100:+.1f}%")
+    title = f"{unit}이 {'줄어든' if down else '늘어난'} {what}" + (f" TOP {int(n)}" if n else f" {len(sel):,}개")
+    res = _result(title, plabel, facts, chart, table, notes)
+    res["display_table"] = disp
+    return res
 
 
 SLICE_SUFFIX = {"주문수": "건", "구매고객수": "명", "판매수량": "개", "방문수": "세션"}
@@ -579,7 +591,7 @@ _TOOL_LIST = [
          "맞대어 '얼마 → 얼마'로 보여 주고 감소액(direction=down) 또는 증가액(direction=up)이 큰 순으로 정렬. "
          "'매출이 빠진/줄어든/떨어진 상품', '많이 늘어난 상품', '덜 팔린 카테고리' 질문. 보고 싶은 기간만 넘기면 "
          "직전 기간(달이면 전달, 달력 주면 그 전 주)과 자동 비교",
-         PERIOD | {"target": "product | category", "direction": "down | up", "n": "개수", "metric": "매출 | 수량"},
+         PERIOD | {"target": "product | category", "direction": "down | up", "n": "개수(질문에 개수가 있을 때만)", "metric": "매출 | 수량"},
          compare_items, []),
     Tool("analyze", "조립형 분석: 지표(measure)를 기준(dims, 1~2개)별로 나눠 보고, 필요하면 직전 기간과 비교. 다른 전용 도구가 "
          "딱 맞지 않는 '무엇을 × 무엇별로' 질문에 쓴다. 예: 요일별·시간대별·평일/주말 매출, 성별·연령대·지역·가입경로·등급별 "
