@@ -852,7 +852,9 @@ def _grade_at(m: dict, df: pd.DataFrame, time_col: str) -> pd.Series:
     x = pd.merge_asof(x, gh[["customer_id", "effective_from", "effective_to", "membership_grade"]],
                       left_on=time_col, right_on="effective_from", by="customer_id", direction="backward")
     ok = x["effective_to"].isna() | (x[time_col] < x["effective_to"])
-    return x.set_index("index")["membership_grade"].where(ok).reindex(df.index)
+    # ok는 x의 순서(0..n)로 매겨져 있으므로 값으로 적용한 뒤 원래 행 번호로 돌린다
+    # (이전: 인덱스가 어긋나 상세 기간 앞쪽 일부 행 말고는 모두 NaN이 되던 버그, 2026-11-06 수정)
+    return pd.Series(x["membership_grade"].where(ok.values).values, index=x["index"].values).reindex(df.index)
 
 
 def clean_filters(f: dict | None) -> dict:
