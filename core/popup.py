@@ -67,8 +67,10 @@ def spec_from_calls(calls: list[dict]) -> dict | None:
         f = {}
     if f.get("new_signup"):
         prev = None          # 신규 가입 고객은 직전 기간에 아직 가입 전이라 비교할 수 없다
-    return {"cur": cur, "prev": prev, "filters": f,
-            "focus": "funnel" if any(t in FUNNEL_TOOLS for t in tools) else "sales"}
+    change = next((dict(c.get("params") or {}) for c in calls if c.get("tool") == "compare_items"), None)
+    focus = "change" if change is not None and prev is not None else \
+        "funnel" if any(t in FUNNEL_TOOLS for t in tools) else "sales"
+    return {"cur": cur, "prev": prev, "filters": f, "focus": focus, "change": change}
 
 
 def short_label(p) -> str:
@@ -163,6 +165,42 @@ def _top_products(m, cur, prev, n=10):
         out["순위 변화"] = ["새로 진입" if pd.isna(r) else "–" if r == i else f"▲{int(r - i)}" if r > i else f"▼{int(i - r)}"
                          for i, r in zip(out["순위"], prev_rank)]
     st.dataframe(out, hide_index=True, width="stretch")
+
+
+def _changes(m, cur, prev, cur_l, prev_l, params):
+    """같은 상품(카테고리)을 두 기간에 맞대어 본 변화: 줄어든 쪽과 늘어난 쪽을 함께 (질문한 방향을 먼저)."""
+    target, metric = params.get("target", "product"), params.get("metric", "매출")
+    n = int(params.get("n") or 5)
+    down_first = params.get("direction", "down") != "up"
+    df = M.item_changes(m, cur, prev, target=target, metric=metric)
+    qty = metric == "수량"
+    what = "상품" if target == "product" else "카테고리"
+    lab = df["product_name"] if target == "product" else df["category"]
+    df = df.assign(항목=lab)
+    dn = df[df["변화"] < 0].sort_values("변화").head(n).assign(방향="줄어듦")
+    up = df[df["변화"] > 0].sort_values("변화", ascending=False).head(n).assign(방향="늘어남")
+    show = pd.concat([dn, up] if down_first else [up, dn], ignore_index=True)
+    if show.empty:
+        st.info(f"두 기간 사이에 달라진 {what}이 없습니다.")
+        return
+    fmt = "," if qty else "~s"
+    ch = alt.Chart(show).mark_bar(cornerRadiusEnd=2).encode(
+        y=alt.Y("항목:N", sort=list(show["항목"]), title=None, axis=alt.Axis(labelOverlap=False, labelLimit=180)),
+        x=alt.X("변화:Q", title=f"{'판매 수량' if qty else '상품매출'} 변화 ({prev_l} → {cur_l})", axis=alt.Axis(format=fmt)),
+        color=alt.Color("방향:N", scale=alt.Scale(domain=["줄어듦", "늘어남"], range=[ui.C_DOWN, ui.C_UP]),
+                        legend=alt.Legend(title=None)),
+        tooltip=[alt.Tooltip("항목:N", title=what), alt.Tooltip("이전:Q", title=prev_l, format=","),
+                 alt.Tooltip("현재:Q", title=cur_l, format=","), alt.Tooltip("변화:Q", format=","),
+                 alt.Tooltip("변화율:Q", format="+.1%")])
+    st.altair_chart(ch.properties(height=max(220, 32 * len(show))), width="stretch")
+    f = (lambda v: f"{v:,.0f}개") if qty else ui.won
+    tbl = pd.DataFrame({what: show["항목"], **({"카테고리": show["category"]} if target == "product" else {}),
+                        prev_l: show["이전"].map(f), cur_l: show["현재"].map(f),
+                        "변화": [("+" if v > 0 else "") + f(v) for v in show["변화"]],
+                        "변화율": show["변화율"].map(lambda v: "–" if pd.isna(v) else f"{v * 100:+.1f}%")})
+    st.dataframe(tbl, hide_index=True, width="stretch")
+    ui.note(f"각 기간의 TOP 목록끼리 비교한 것이 아니라, 같은 {what}의 두 기간 값을 맞대어 본 변화입니다. "
+            f"전체 {len(df):,}개 중 줄어든 {what} {int((df['변화'] < 0).sum()):,}개, 늘어난 {what} {int((df['변화'] > 0).sum()):,}개.")
 
 
 def _funnel(m, cur, prev, cur_l, prev_l):
@@ -265,7 +303,14 @@ def _body(m, spec, question, key, cur, prev, f, cur_l, prev_l):
         st.markdown(f"**매출 변화 나눠 보기** · {ui.won(dec['revenue_change'])} 변화 = 주문 수 효과 "
                     f"**{ui.won(dec['order_effect'])}** + 객단가 효과 **{ui.won(dec['aov_effect'])}**")
 
-    if spec["focus"] == "funnel":
+    if spec["focus"] == "change":
+        p = spec["change"]
+        what = "상품" if p.get("target", "product") == "product" else "카테고리"
+        st.markdown(f"##### {what}별 {'판매 수량' if p.get('metric') == '수량' else '상품매출'} 변화 ({prev_l} → {cur_l})")
+        _changes(m2, cur, prev, cur_l, prev_l, p)
+        st.markdown("##### 매출 추이")
+        _trend(m2, cur, prev, cur_l, prev_l)
+    elif spec["focus"] == "funnel":
         st.markdown("##### 구매 퍼널")
         _funnel(m2, cur, prev, cur_l, prev_l)
         st.markdown("##### 매출 추이")

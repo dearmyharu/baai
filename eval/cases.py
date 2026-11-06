@@ -1,4 +1,4 @@
-"""AI 챗봇 평가셋: 실무자 질문 30선 + 데이터로 답할 수 없는 질문 6개.
+"""AI 챗봇 평가셋: 실무자 질문 31개 + 데이터로 답할 수 없는 질문 8개.
 
 각 질문에 대해
 - period: 챗봇이 질문 속 기간 표현을 어떻게 해석해야 하는지 (아래 기간 규칙)
@@ -28,6 +28,8 @@ PREV_WEEK = (P("2026-09-21"), P("2026-09-24"))   # 지난주 같은 요일
 LAST_2W = (P("2026-09-17"), P("2026-10-01"))
 PREV_2W = (P("2026-09-03"), P("2026-09-17"))
 ALL = (P("2026-04-01"), P("2026-10-01"))
+LAST_WEEK = (P("2026-09-21"), P("2026-09-28"))   # 지난주 9/21(월)~9/27(일)
+WEEK_BEFORE = (P("2026-09-14"), P("2026-09-21"))  # 2주 전 9/14~9/20
 
 # 채점 방법
 EXACT = "숫자 일치: 정답값과 같은 숫자(표시 반올림 허용)를 말하고 기준 기간을 밝혀야 정답"
@@ -205,6 +207,18 @@ def q30(m):
             "필요 기간(일, 두 그룹)": _r(2 * per_group / daily, 1)}
 
 
+def q31(m):
+    """같은 상품의 두 주 상품매출을 맞대어 감소액이 큰 순 5개 (도구와 따로 계산)."""
+    a = M.completed_items(m, *LAST_WEEK).groupby(["product_name", "category"])["net_sales"].sum()
+    b = M.completed_items(m, *WEEK_BEFORE).groupby(["product_name", "category"])["net_sales"].sum()
+    d = (a.reindex(a.index.union(b.index), fill_value=0) - b.reindex(a.index.union(b.index), fill_value=0))
+    d = d[d < 0].sort_values().head(5)
+    rows = [{"product_name": k[0], "category": k[1], "2주 전": _r(b.get(k, 0)), "지난주": _r(a.get(k, 0)), "변화": _r(v)}
+            for k, v in d.items()]
+    return {"매출 감소액 상위 5(같은 상품 맞대어 비교)": rows,
+            "주의": "각 주의 TOP5끼리 비교하거나 다른 지표를 덧붙이면 오답"}
+
+
 # ---------------------------------------------------------------------------
 # 질문 목록
 # ---------------------------------------------------------------------------
@@ -267,6 +281,9 @@ CASES = [
          check=HYPO, expected=q29),
     dict(id=30, level="L4", q="장바구니→구매 전환율을 5% 올리는 실험, 몇 명한테 며칠 돌려야 해?", period="2026-09 기준 전환율",
          tool="plan_experiment", check=EXACT, expected=q30),
+    # 추가 (2026-11-06, 실사용에서 틀린 질문): 두 기간을 상품별로 맞대어 비교해야 함
+    dict(id=31, level="L2", q="지난주에 2주 전보다 매출이 빠진 상품 보여줘", period="9/21~9/27 vs 9/14~9/20",
+         tool="compare_items", check=RANK + ". 같은 상품의 두 주 매출을 맞대어 감소액 순", expected=q31),
 ]
 
 OUT_OF_SCOPE = [

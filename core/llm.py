@@ -46,6 +46,9 @@ SYSTEM = """너는 식품 이커머스 회사의 'AI 분석가'다. 데이터 �
 - 첫 구매 vs 기존 고객 비교, 재구매까지 걸리는 기간 → get_retention
 - 재구매가 안 되는/잘 되는 고객군 → segment_repeat
 - 카테고리별 매출·비중 → rank_items(target=category), 상품 순위 → rank_items(target=product)
+- 기간 대비 매출이 빠진·줄어든·떨어진·늘어난 상품이나 카테고리 → compare_items(direction=down 또는 up).
+  두 기간을 rank_items로 따로 불러 TOP 목록끼리 비교하지 않는다. "지난주에 2주 전보다 빠진 상품" → 지난주 기간
+  (start=2026-09-21, end=2026-09-28)만 넘기면 도구가 그 전 주(09-14~09-20)와 비교한다.
 - "잘 팔린/제일 잘 팔려"는 매출 기준으로 보고 답변에 '매출 기준'이라고 밝힌다. "많이 팔린 개수/수량/판매량" → rank_items(metric=수량)
 
 [고객 조건]
@@ -70,7 +73,11 @@ SYSTEM = """너는 식품 이커머스 회사의 'AI 분석가'다. 데이터 �
 6. 아직 도구가 없는 분석: 요일×시간대 주문, 함께 사는 상품 조합, 결제수단별 분석. 연령·성별·지역은 '조건'(filters)으로만
    걸 수 있고, 여러 연령대·성별을 한 번에 나란히 비교하는 표는 없다(필요하면 조건을 바꿔 도구를 여러 번 부른다).
    '아직 지원하지 않는다'고 밝히고 가능한 대체 분석을 안내한다. 숫자를 지어내지 않는다.
-7. 화면에 도구 결과(사실 목록·차트·표)가 함께 표시되므로, 답변은 핵심 해석 2~5문장으로 짧게 쓴다. 한국어, 존댓말.
+7. 질문한 것에만 답한다. 도구 결과에 다른 지표가 함께 있어도 질문하지 않은 지표·분석은 덧붙이지 않는다.
+   화면에 차트·표·근거가 따로 표시되므로 답변은 짧게, 이 모양으로 쓴다(최대 5줄, 한국어 존댓말):
+   첫 줄: 기준 기간과 함께 질문에 대한 답(결론) 한 문장
+   그다음: 그 답의 근거 숫자 2~3개를 "- "로 시작하는 목록으로
+   필요할 때만 마지막 줄: "가설: …" 한 문장(원인·대책을 말할 때)
 8. 쿠폰 효율은 '쿠폰 때문에 생긴 매출'이 아니라 '쿠폰을 쓴 주문의 매출'이다. 잠재력 점수는 예측이 아니다.
    큐레이션 경유 세션의 전환율이 높거나 낮아도 큐레이션 효과로 단정하지 않는다.
 9. 결과에 없는 비중·순위·추세를 덧붙여 해석하지 않는다. 도구 결과의 숫자를 직접 더하거나 빼거나 나누어 새 숫자를 만들지 않는다
@@ -85,9 +92,10 @@ SYSTEM = """너는 식품 이커머스 회사의 'AI 분석가'다. 데이터 �
 PARAM_SCHEMA = {
     "start": {"type": "string", "description": "시작일 YYYY-MM-DD"},
     "end": {"type": "string", "description": "끝 다음 날 YYYY-MM-DD (미포함). 9월이면 2026-10-01"},
-    "target": {"type": "string", "enum": ["product", "category"], "description": "상품 순위 또는 카테고리 순위"},
+    "target": {"type": "string", "enum": ["product", "category"], "description": "상품별 또는 카테고리별"},
+    "direction": {"type": "string", "enum": ["down", "up"], "description": "down = 줄어든 순(기본), up = 늘어난 순"},
     "n": {"type": "integer", "description": "보여줄 개수 (기본 5)"},
-    "metric": {"type": "string", "enum": ["매출", "수량"], "description": "상품 순위 기준: 매출(기본) 또는 판매 수량"},
+    "metric": {"type": "string", "enum": ["매출", "수량"], "description": "기준: 매출(기본) 또는 판매 수량"},
     "grain": {"type": "string", "enum": ["date", "week", "month"], "description": "일·주·월 단위"},
     "path": {"type": "string", "enum": ["ALL", "CURATION", "BROWSE"], "description": "전체 / 큐레이션 경유 / 일반 탐색"},
     "by": {"type": "string", "enum": ["customer_type", "grade_at_order", "visitor_type", "signup_channel"],
@@ -133,6 +141,7 @@ TOOL_KO = {
     "detect_changes": "변화 탐지", "get_themes": "큐레이션 테마 분석", "get_retention": "재구매 분석",
     "get_segments": "고객군(RFM) 분석", "segment_preference": "고객군별 선호 카테고리", "segment_repeat": "고객군별 재구매율",
     "design_experiment": "실험 설계", "find_potential_products": "성장 잠재력 상품 분석",
+    "compare_items": "상품별 매출 변화",
 }
 _TOOL_RE = re.compile(r"`?(?<![A-Za-z0-9_])(" + "|".join(sorted(TOOL_KO, key=len, reverse=True)) + r")(?![A-Za-z0-9_])(?:\(\))?`?")
 _RULE_RE = re.compile(r"\s*\(?(?:규칙|지시문?) ?\d+번(?:에 따라|에 의해)?\)?,?")
