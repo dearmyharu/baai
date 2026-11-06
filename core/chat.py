@@ -105,15 +105,20 @@ def show_result(res: dict, folded: bool = False):
 
 
 
+def _md(t: str) -> str:
+    """마크다운 기호가 서식으로 바뀌지 않게: '9-21~9-27'의 ~가 취소선이 되던 문제 등."""
+    return str(t).replace("\\", "\\\\").replace("~", "\\~").replace("*", "\\*").replace("_", "\\_")
+
+
 def show_answer(a: dict):
     """칸으로 받은 답변을 항상 같은 모양으로: 결론(굵게) → 근거 숫자 → 가설 → 참고."""
-    st.markdown(f"**{a['conclusion']}**")
+    st.markdown(f"**{_md(a['conclusion'])}**")
     if a.get("evidence"):
-        st.markdown("\n".join(f"- {x}" for x in a["evidence"]))
+        st.markdown("\n".join(f"- {_md(x)}" for x in a["evidence"]))
     if a.get("hypothesis"):
-        st.markdown(f":orange-badge[가설] {a['hypothesis']}")
+        st.markdown(f":orange-badge[가설] {_md(a['hypothesis'])}")
     if a.get("notice"):
-        st.caption(f"ℹ️ {a['notice']}")
+        st.caption(f"ℹ️ {_md(a['notice'])}")
 
 
 def ask_next(q: str):
@@ -234,7 +239,7 @@ def render(m):
                     if e.get("answer"):
                         show_answer(e["answer"])
                     elif e.get("a"):
-                        st.markdown(e["a"])
+                        st.markdown(str(e["a"]).replace("~", "\\~"))   # '9-21~9-27'이 취소선이 되지 않게
                     if e.get("unverified"):
                         st.warning(f"분석 결과에서 찾지 못한 숫자가 있습니다: {', '.join(e['unverified'])}. "
                                    "AI가 직접 계산했거나 잘못 옮겼을 수 있으니 아래 분석 결과로 확인해 주세요.",
