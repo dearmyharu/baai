@@ -1,45 +1,34 @@
-"""⓪ AI 분석가: 궁금한 것을 물으면 데이터를 찾아 차트로 보여준다.
+"""AI 분석가 채팅 패널: 모든 화면 오른쪽에 붙어 있는 챗봇.
 
+app.py가 화면(왼쪽) 옆에 render(m)을 불러 그린다. 대화 기록은 화면을 옮겨 다녀도 유지된다(session_state).
 OPENAI_API_KEY(또는 GEMINI_API_KEY)가 있으면: 질문 → AI가 도구(core/tools.py)와 기간을 고름 → 도구 실행 → AI가 결과를 근거로 설명.
 키가 없으면: 예시 질문 버튼만 정해진 도구를 바로 실행한다.
 """
+from __future__ import annotations
+
 import altair as alt
-import pandas as pd
 import streamlit as st
 
 from core import llm, store, tools, ui
 
-m = ui.get_mart()
+EXAMPLES_SHOWN = 6        # 대화가 비어 있을 때 보여 줄 예시 질문 수
 
-st.title("AI 분석가")
-st.caption("궁금한 것을 물어보면 데이터를 찾아 숫자와 차트로 보여 드립니다. 데이터 기간: 2026-04-01 ~ 2026-09-30")
+PANEL_CSS = """
+<style>
+  /* 채팅 패널이 든 열: 화면을 내려도 오른쪽에 붙어 있게 */
+  div[data-testid="stColumn"]:has(.st-key-chat_panel) {position: sticky; top: 3.5rem; align-self: flex-start;}
+  .st-key-chat_panel {background: #F7F9F8; border: 1px solid #E5E7EB; border-radius: 12px; padding: .9rem .9rem .6rem;}
+  .st-key-chat_msgs {height: calc(100vh - 17rem) !important; min-height: 320px;}
+  .st-key-chat_panel [data-testid="stChatMessage"] {padding: .4rem .2rem;}
+  .st-key-chat_panel p, .st-key-chat_panel li {font-size: .92rem;}
+</style>
+"""
 
-
-KEY = llm.api_key()
-if not KEY:
-    st.info("AI 모델이 아직 연결되지 않았습니다. 지금은 아래 **예시 질문**에 답할 수 있어요. "
-            "Secrets에 OPENAI_API_KEY를 넣으면 자유롭게 질문할 수 있습니다.", icon=":material/info:")
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def model_list(key: str) -> list[str]:
     return llm.text_models(key)   # 실패하면 예외 → 캐시에 남지 않음
 
-
-if KEY:
-    try:
-        cur_model, all_models = llm.pick_model(KEY), model_list(KEY)   # 모델은 매번 확인(자동 교체 반영)
-    except Exception as e:  # 목록 조회 실패해도 화면은 계속 (다음 화면 갱신 때 다시 시도)
-        cur_model, all_models = f"(확인 실패: {e})", []
-    with st.expander(f"AI 모델: {cur_model}", icon=":material/tune:"):
-        st.markdown("기본은 이 키로 쓸 수 있는 **가장 가벼운 등급의 모델**(GPT는 nano, Gemini는 Flash-Lite)을 자동으로 고릅니다. "
-                    "다른 모델을 쓰려면 Streamlit Secrets에 아래 한 줄을 추가하고 앱을 다시 시작하세요.")
-        st.code(f'{llm.model_setting(KEY)} = "{cur_model}"', language="toml")
-        if all_models:
-            st.caption("이 키로 쓸 수 있는 모델: " + ", ".join(all_models))
-
-if "ask_log" not in st.session_state:
-    st.session_state.ask_log = []
-log = st.session_state.ask_log
 
 
 # ---------------------------------------------------------------------------
@@ -94,6 +83,7 @@ def show_result(res: dict):
         ui.note(n)
 
 
+
 def save_to_lab(e: dict, res: dict, key: str):
     """분석 결과 하나를 Growth Lab 문제 후보로 저장 (질문·AI 설명·근거 사실을 함께 넘긴다)."""
     ctx = {"page": "AI 분석가", "period": res["period"], "compare": ""}
@@ -118,7 +108,7 @@ def save_to_lab(e: dict, res: dict, key: str):
                 st.rerun()
 
 
-def run_direct(tool: str, params: dict) -> dict:
+def _run_direct(m, tool: str, params: dict) -> dict:
     """LLM 없이 정해진 도구를 바로 실행 (키가 없을 때 예시 질문용)."""
     try:
         return {"a": "", "results": [tools.run(m, tool, **params)], "tools": [tool]}
@@ -126,69 +116,96 @@ def run_direct(tool: str, params: dict) -> dict:
         return {"a": f"이 질문은 지금 데이터로 답하기 어렵습니다: {e}"}
 
 
-def answer(question: str, tool: str | None = None, params: dict | None = None):
+def _answer(m, key, log: list, question: str, tool: str | None = None, params: dict | None = None):
     entry = {"q": question}
-    if KEY:
+    if key:
         history = [{"q": e["q"], "a": e.get("a", "")} for e in log]
         try:
             with st.spinner("데이터를 찾아 분석하는 중..."):
-                r = llm.ask(KEY, question, lambda name, p: tools.run(m, name, **p), history)
+                r = llm.ask(key, question, lambda name, p: tools.run(m, name, **p), history)
             entry.update(a=r["text"], model=r["model"], usage=llm.usage_label(r["model"], r.get("usage")), clarify=r.get("clarify"),
                          unverified=llm.unsupported_in_answer(r["text"], r["calls"]),
                          results=[c["result"] for c in r["calls"] if "result" in c],
                          tools=[f"{llm.TOOL_KO.get(c['tool'], c['tool'])}({', '.join(f'{k}={v}' for k, v in c['params'].items())})" for c in r["calls"]])
         except Exception as e:  # API 오류·시간 초과 등: 앱이 멈추지 않게 안내만 한다
             msg = str(e) if isinstance(e, llm.LLMError) else f"AI 분석 중 문제가 생겼습니다({type(e).__name__}). 다시 질문해 주세요."
-            entry.update(run_direct(tool, params or {}) if tool else {})
+            entry.update(_run_direct(m, tool, params or {}) if tool else {})
             entry["a"] = f"⚠️ {msg}" + (" 대신 정해진 분석 결과를 보여 드립니다." if tool else "")
     elif tool is None:
-        entry["a"] = "AI 모델이 연결되면 이런 자유 질문에도 답할 수 있어요. 지금은 아래 예시 질문 중 비슷한 것을 골라 주세요."
+        entry["a"] = "AI 모델이 연결되면 이런 자유 질문에도 답할 수 있어요. 지금은 예시 질문 중 비슷한 것을 골라 주세요."
     else:
-        entry.update(run_direct(tool, params or {}))
+        entry.update(_run_direct(m, tool, params or {}))
     log.append(entry)
 
 
+def _model_settings(key):
+    try:
+        cur_model, all_models = llm.pick_model(key), model_list(key)   # 모델은 매번 확인(자동 교체 반영)
+    except Exception as e:  # 목록 조회 실패해도 화면은 계속 (다음 화면 갱신 때 다시 시도)
+        cur_model, all_models = f"(확인 실패: {e})", []
+    st.markdown(f"**AI 모델: {cur_model}**  \n기본은 이 키로 쓸 수 있는 **가장 가벼운 등급의 모델**(GPT는 nano, Gemini는 Flash-Lite)을 "
+                "자동으로 고릅니다. 다른 모델을 쓰려면 Streamlit Secrets에 아래 한 줄을 추가하고 앱을 다시 시작하세요.")
+    st.code(f'{llm.model_setting(key)} = "{cur_model}"', language="toml")
+    if all_models:
+        st.caption("이 키로 쓸 수 있는 모델: " + ", ".join(all_models))
+
+
 # ---------------------------------------------------------------------------
-# 대화
+# 패널
 # ---------------------------------------------------------------------------
-for i, e in enumerate(log):
-    with st.chat_message("user"):
-        st.markdown(e["q"])
-    with st.chat_message("assistant"):
-        if e.get("a"):
-            st.markdown(e["a"])
-        if e.get("unverified"):
-            st.warning(f"분석 결과에서 찾지 못한 숫자가 있습니다: {', '.join(e['unverified'])}. "
-                       "AI가 직접 계산했거나 잘못 옮겼을 수 있으니 아래 분석 결과로 확인해 주세요.", icon=":material/warning:")
-        for j, res in enumerate(e.get("results", [])):
-            show_result(res)
-            save_to_lab(e, res, key=f"lab_{i}_{j}")
-        if e.get("clarify") and e is log[-1]:
-            cols = st.columns(len(e["clarify"]))
-            for j, lab in enumerate(e["clarify"]):
-                if cols[j].button(lab, key=f"clar_{len(log)}_{j}", use_container_width=True):
-                    st.session_state.pending_q = llm.with_period(e["q"], lab)
-                    st.rerun()
-        if e.get("tools") and e.get("model"):
-            st.caption(f"사용한 분석: {' · '.join(e['tools'])} · 모델 {e['model']}"
-                       + (f" · {e['usage']}" if e.get("usage") else ""))
+def render(m):
+    st.markdown(PANEL_CSS, unsafe_allow_html=True)
+    key = llm.api_key()
+    log = st.session_state.setdefault("ask_log", [])
 
-q = st.chat_input("예: 이번 달 매출 제일 많이 나온 상품은?") or st.session_state.pop("pending_q", None)
-if q:
-    hit = next((ex for ex in tools.EXAMPLES if ex[0].replace(" ", "") == q.replace(" ", "")), None)
-    answer(q, *(hit[1:] if hit else (None, None)))   # 키가 있으면 어떤 질문이든 Gemini가 답한다
-    st.rerun()
+    with st.container(key="chat_panel"):
+        h1, h2 = st.columns([5, 1], vertical_alignment="center")
+        h1.markdown("**AI 분석가**")
+        with h2.popover("", icon=":material/more_vert:", help="설정·대화 지우기"):
+            if key:
+                _model_settings(key)
+            if log and st.button("대화 지우기", icon=":material/delete:", use_container_width=True):
+                log.clear()
+                st.rerun()
+            ui.note("이번 달 = 2026년 9월, 지난달 = 8월로 해석합니다(데이터 마지막 날 기준). "
+                    "숫자는 모두 대시보드와 같은 계산 함수로 만듭니다. 원인·대책은 데이터로 확인된 사실이 아니라 가설입니다.")
 
-st.markdown("**예시 질문**")
-cols = st.columns(2)
-for i, (eq, tool, params) in enumerate(tools.EXAMPLES):
-    if cols[i % 2].button(eq, key=f"ex_{i}", use_container_width=True):
-        answer(eq, tool, params)
-        st.rerun()
+        with st.container(height=520, border=False, key="chat_msgs"):
+            if not log:
+                st.caption("궁금한 것을 물어보면 데이터를 찾아 숫자와 차트로 보여 드립니다. "
+                           "다른 화면으로 옮겨 가도 대화는 이어집니다. 데이터 기간: 2026-04-01 ~ 2026-09-30")
+                if not key:
+                    st.info("AI 모델이 아직 연결되지 않아 예시 질문에만 답할 수 있어요. "
+                            "Secrets에 OPENAI_API_KEY를 넣으면 자유롭게 질문할 수 있습니다.", icon=":material/info:")
+                st.markdown("**이렇게 물어보세요**")
+                for i, (eq, tool, params) in enumerate(tools.EXAMPLES[:EXAMPLES_SHOWN]):
+                    if st.button(eq, key=f"ex_{i}", use_container_width=True):
+                        _answer(m, key, log, eq, tool, params)
+                        st.rerun()
+            for i, e in enumerate(log):
+                with st.chat_message("user"):
+                    st.markdown(e["q"])
+                with st.chat_message("assistant"):
+                    if e.get("a"):
+                        st.markdown(e["a"])
+                    if e.get("unverified"):
+                        st.warning(f"분석 결과에서 찾지 못한 숫자가 있습니다: {', '.join(e['unverified'])}. "
+                                   "AI가 직접 계산했거나 잘못 옮겼을 수 있으니 아래 분석 결과로 확인해 주세요.",
+                                   icon=":material/warning:")
+                    for j, res in enumerate(e.get("results", [])):
+                        show_result(res)
+                        save_to_lab(e, res, key=f"lab_{i}_{j}")
+                    if e.get("clarify") and e is log[-1]:
+                        for j, lab in enumerate(e["clarify"]):
+                            if st.button(lab, key=f"clar_{len(log)}_{j}", use_container_width=True):
+                                st.session_state.pending_q = llm.with_period(e["q"], lab)
+                                st.rerun()
+                    if e.get("tools") and e.get("model"):
+                        st.caption(f"사용한 분석: {' · '.join(e['tools'])} · 모델 {e['model']}"
+                                   + (f" · {e['usage']}" if e.get("usage") else ""))
 
-if log:
-    if st.button("대화 지우기", icon=":material/delete:"):
-        log.clear()
-        st.rerun()
-ui.note("이번 달 = 2026년 9월, 지난달 = 8월로 해석합니다(데이터 마지막 날 기준). "
-        "숫자는 모두 대시보드와 같은 계산 함수로 만듭니다. 원인·대책은 데이터로 확인된 사실이 아니라 가설입니다.")
+        q = st.chat_input("무엇이든 물어보세요", key="chat_q") or st.session_state.pop("pending_q", None)
+        if q:
+            hit = next((ex for ex in tools.EXAMPLES if ex[0].replace(" ", "") == q.replace(" ", "")), None)
+            _answer(m, key, log, q, *(hit[1:] if hit else (None, None)))   # 키가 있으면 어떤 질문이든 AI가 답한다
+            st.rerun()
