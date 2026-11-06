@@ -14,6 +14,10 @@ st.title("Growth Lab")
 st.caption("다른 화면에서 저장한 변화를 문제 → 가설 → 전략 → 실험 설계로 정리하는 작업 공간입니다. "
            + ("저장 위치: 공유 DB (팀원 모두에게 보입니다)" if store.backend() == "db"
               else "저장 위치: 이 PC의 dashboard/growth_lab/store.json (나만 보입니다)"))
+if store.db_error():
+    st.warning("공유 DB에 연결하지 못해 이 PC 파일(growth_lab/store.json)에 저장하고 있습니다. 팀원에게는 보이지 않습니다. "
+               "DB 접속 정보(.env 또는 .streamlit/secrets.toml의 DB_HOST·DB_USER·DB_PASSWORD)를 확인하세요. "
+               f"원인: {store.db_error()}", icon=":material/cloud_off:")
 if store.current_author() == "익명":
     st.info("왼쪽 사이드바 아래 '내 이름'을 적으면 누가 저장·수정했는지 함께 기록됩니다.", icon=":material/person:")
 
