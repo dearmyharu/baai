@@ -177,12 +177,16 @@ def _messages(system: str, contents: list[dict]) -> list[dict]:
 
 
 def tool_loop(key: str, system: str, contents: list[dict], run_tool: Callable[[str, dict], dict],
-              model: str, steps: int) -> dict:
-    """llm._tool_loop의 OpenAI판. 반환 형식 동일: {"text", "calls", "model"}"""
+              model: str, steps: int, answer_schema: dict | None = None) -> dict:
+    """llm._tool_loop의 OpenAI판. 반환 형식 동일: {"text", "calls", "model"}
+    answer_schema가 있으면 최종 답변(도구 호출이 없는 응답)을 그 JSON 칸으로 받는다."""
     tools = [{"type": "function", "function": {"name": d["name"], "description": d["description"],
                                                "parameters": d["parameters"]}} for d in L.function_declarations()]
     msgs = _messages(system, contents)
     body = {"messages": msgs, "tools": tools, "tool_choice": "auto"}
+    if answer_schema:
+        body["response_format"] = {"type": "json_schema",
+                                   "json_schema": {"name": "answer", "schema": _strict(answer_schema), "strict": True}}
     calls, forced, usage = [], False, L.new_usage()
     for _ in range(steps + 1):
         d, model = _chat_any(key, model, body)

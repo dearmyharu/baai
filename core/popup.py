@@ -68,9 +68,10 @@ def spec_from_calls(calls: list[dict]) -> dict | None:
     if f.get("new_signup"):
         prev = None          # 신규 가입 고객은 직전 기간에 아직 가입 전이라 비교할 수 없다
     change = next((dict(c.get("params") or {}) for c in calls if c.get("tool") == "compare_items"), None)
-    focus = "change" if change is not None and prev is not None else \
+    slices = [dict(c.get("params") or {}) for c in calls if c.get("tool") == "analyze"]
+    focus = "slice" if slices else "change" if change is not None and prev is not None else \
         "funnel" if any(t in FUNNEL_TOOLS for t in tools) else "sales"
-    return {"cur": cur, "prev": prev, "filters": f, "focus": focus, "change": change}
+    return {"cur": cur, "prev": prev, "filters": f, "focus": focus, "change": change, "slices": slices}
 
 
 def short_label(p) -> str:
@@ -303,7 +304,26 @@ def _body(m, spec, question, key, cur, prev, f, cur_l, prev_l):
         st.markdown(f"**매출 변화 나눠 보기** · {ui.won(dec['revenue_change'])} 변화 = 주문 수 효과 "
                     f"**{ui.won(dec['order_effect'])}** + 객단가 효과 **{ui.won(dec['aov_effect'])}**")
 
-    if spec["focus"] == "change":
+    if spec["focus"] == "slice":
+        from . import tools as T
+        from .chat import draw_chart       # chat이 이 모듈을 불러오므로 여기서 불러온다
+        for j, p in enumerate(spec["slices"]):
+            try:
+                res = T.run(m, "analyze", **p)
+            except Exception as ex:  # noqa: BLE001  (도구가 거절한 조합: 챗봇 답변에 이유가 나온다)
+                st.info(f"이 분석은 그릴 수 없습니다: {ex}")
+                continue
+            st.markdown(f"##### {res['title']}")
+            if res.get("chart") is not None:
+                draw_chart(res["chart"])
+            tbl = res.get("display_table") if res.get("display_table") is not None else res.get("table")
+            if tbl is not None:
+                st.dataframe(tbl, hide_index=True, width="stretch")
+            for n_ in res.get("notes", []):
+                ui.note(n_)
+        st.markdown("##### 매출 추이")
+        _trend(m2, cur, prev, cur_l, prev_l)
+    elif spec["focus"] == "change":
         p = spec["change"]
         what = "상품" if p.get("target", "product") == "product" else "카테고리"
         st.markdown(f"##### {what}별 {'판매 수량' if p.get('metric') == '수량' else '상품매출'} 변화 ({prev_l} → {cur_l})")

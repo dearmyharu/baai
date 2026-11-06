@@ -76,6 +76,8 @@ CHECKS = {
     25: ("segment_repeat", dict(by="customer_type"),
          lambda r, e: None if any(has(r["facts"], f"가장 낮은 고객군: {v['가장 낮은 고객군']}") for v in e["기준별"].values())
          else "가장 낮은 고객군"),
+    17: ("analyze", dict(start="2026-09-01", end="2026-10-01", measure="주문수", dims=["요일", "시간대"]),
+         lambda r, e: None if has(r["facts"], "1위 {요일} · {시간대}: {주문 수}건".format(**e["가장 많은 칸"])) else "가장 많은 요일·시간대"),
     31: ("compare_items", dict(start="2026-09-21", end="2026-09-28"),
          lambda r, e: None if all(has(r["facts"], f"{i+1}위 {x['product_name']}", T.won(x["변화"]))
                                   for i, x in enumerate(e["매출 감소액 상위 5(같은 상품 맞대어 비교)"])) else "감소 상품 순서·금액"),

@@ -250,7 +250,8 @@ CASES = [
     dict(id="V24", period=SEP, level="D 정의", q="테마 클릭률이 가장 높은 큐레이션은?", kind="check", expected=themes(SEP),
          checks=[("get_themes", lambda r, e: ok_if(has(r, f"클릭률 1위: {e['클릭률 1위']}"), "클릭률 1위 불일치"))],
          params=("get_themes", d(SEP))),
-    dict(id="V25", level="D 정의", q="처음 방문한 고객과 다시 방문한 고객 중 구매전환율이 높은 쪽은?", kind="refuse"),
+    # V25: 정답 기준 갱신(2026-11-06 조립형 분석으로 신규/재방문별 구매전환율을 볼 수 있게 됨. 이 문항으로 튜닝하지 않음)
+    dict(id="V25", level="D 정의", q="처음 방문한 고객과 다시 방문한 고객 중 구매전환율이 높은 쪽은?", kind="tool", tools={"analyze"}),
     dict(id="V26", period=SEP, level="D 정의", q="9월에 가장 많이 팔린 상품(개수)과 매출 1위 상품이 같아?", kind="check",
          expected=lambda m: {"수량 1위": prod_top(SEP, 1, "qty")(m)["상품"][0], "매출 1위": prod_top(SEP, 1)(m)["상품"][0]},
          checks=[("rank_items", lambda r, e: ok_if(r.get("table") is not None and "상품" in r["table"]
