@@ -7,7 +7,7 @@ import altair as alt
 import pandas as pd
 import streamlit as st
 
-from core import llm, tools, ui
+from core import llm, store, tools, ui
 
 m = ui.get_mart()
 
@@ -94,6 +94,30 @@ def show_result(res: dict):
         ui.note(n)
 
 
+def save_to_lab(e: dict, res: dict, key: str):
+    """분석 결과 하나를 Growth Lab 문제 후보로 저장 (질문·AI 설명·근거 사실을 함께 넘긴다)."""
+    ctx = {"page": "AI 분석가", "period": res["period"], "compare": ""}
+    default_title = res["title"]
+    if key in e.get("saved", []) or store.already_saved(default_title, ctx):
+        st.button("Growth Lab에 저장됨 ✓", key=key, disabled=True)
+        return
+    with st.popover("Growth Lab에 저장", icon=":material/bookmark_add:"):
+        with st.form(f"form_{key}", border=False):
+            title = st.text_input("문제 제목", value=default_title,
+                                  help="Growth Lab 목록에 보일 이름입니다. 예: 9월 야식 테마 장바구니 이탈")
+            memo = st.text_area("이 결과에서 문제라고 본 이유 (선택)",
+                                placeholder="예: 다른 테마보다 장바구니→구매 전환율이 낮다")
+            if st.form_submit_button("저장", type="primary"):
+                cand = {"kind": "ask", "title": title.strip() or default_title, "metric": res["title"],
+                        "definition": memo.strip() or f"AI 분석가 질문: {e['q']}",
+                        "question": e["q"], "answer": e.get("a", ""), "facts": list(res.get("facts", [])),
+                        "tools": e.get("tools", []), "unit": "rate"}
+                store.add_problem(cand, "AI 분석가", ctx)
+                e.setdefault("saved", []).append(key)
+                st.toast(f"'{cand['title']}'을(를) Growth Lab 문제 후보로 저장했습니다.")
+                st.rerun()
+
+
 def run_direct(tool: str, params: dict) -> dict:
     """LLM 없이 정해진 도구를 바로 실행 (키가 없을 때 예시 질문용)."""
     try:
@@ -127,7 +151,7 @@ def answer(question: str, tool: str | None = None, params: dict | None = None):
 # ---------------------------------------------------------------------------
 # 대화
 # ---------------------------------------------------------------------------
-for e in log:
+for i, e in enumerate(log):
     with st.chat_message("user"):
         st.markdown(e["q"])
     with st.chat_message("assistant"):
@@ -136,8 +160,9 @@ for e in log:
         if e.get("unverified"):
             st.warning(f"분석 결과에서 찾지 못한 숫자가 있습니다: {', '.join(e['unverified'])}. "
                        "AI가 직접 계산했거나 잘못 옮겼을 수 있으니 아래 분석 결과로 확인해 주세요.", icon=":material/warning:")
-        for res in e.get("results", []):
+        for j, res in enumerate(e.get("results", [])):
             show_result(res)
+            save_to_lab(e, res, key=f"lab_{i}_{j}")
         if e.get("clarify") and e is log[-1]:
             cols = st.columns(len(e["clarify"]))
             for j, lab in enumerate(e["clarify"]):

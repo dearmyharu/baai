@@ -591,6 +591,10 @@ def problem_brief(p: dict) -> str:
         elif isinstance(v, float):
             v = f"{v:,.4g}"
         lines.append(f"{lab}: {v}")
+    if obs.get("kind") == "ask":      # AI 분석가에서 저장한 문제: 실무자의 질문과 당시 도구 결과 사실
+        lines.append(f"실무자의 질문: {obs.get('question', '')}")
+        for f in obs.get("facts", []):
+            lines.append(f"관찰된 사실: {re.sub(r'[*`]', '', str(f))}")
     for k, lab in {"statement": "팀이 쓴 문제 문장", "target": "대상 고객", "impact": "비즈니스 영향"}.items():
         if dfn.get(k):
             lines.append(f"{lab}: {dfn[k]}")
