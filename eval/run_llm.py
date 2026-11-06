@@ -36,11 +36,11 @@ from eval import holdout as H  # noqa: E402
 from eval import holdout2 as H2  # noqa: E402
 
 CLARIFY = {x["id"] for x in OUT_OF_SCOPE if x.get("clarify")}
-UNSUPPORTED = {17, 26}      # 16(연령·성별·지역)은 2026-11-03 고객 조건 필터로 지원
+UNSUPPORTED = {26}          # 16(연령·성별·지역)은 고객 조건 필터·조립형 분석, 17(요일×시간대)은 2026-11-06 조립형 분석으로 지원
 REFUSE_CUES = ("없습니다", "없어", "지원하지", "지원되지", "미지원", "제공하지", "제공되지", "존재하지", "확인할 수 없", "알 수 없",
                "포함되어 있지", "포함되지", "수집되지", "어렵습니다", "불가")
 LEAK_RE = re.compile(r"규칙 ?\d+번|지시문|분석 지침|get_[a-z_]+|rank_items|detect_changes|design_experiment|"
-                     r"find_potential_products|segment_preference|segment_repeat|explain_revenue_change")
+                     r"find_potential_products|segment_preference|segment_repeat|explain_revenue_change|compare_items|\banalyze\b")
 EXPECTED_TOOLS = {12: {"get_retention"}, 27: {"get_themes"},
                   28: {"get_funnel"}, 29: {"get_segments"}, 30: {"design_experiment"}}
 
@@ -77,8 +77,9 @@ def grade(qid, exp, r) -> tuple[bool, str]:
         ok = any(c in text for c in REFUSE_CUES)
         return ok, "범위 밖·미지원을 밝힘" if ok else "범위 밖인데 그렇다고 말하지 않음"
     if qid == 16:
-        ok = any((c["params"] or {}).get("filters") for c in calls if "result" in c)
-        return ok, "고객 조건으로 나눠 봄(내용은 사람 확인)" if ok else "고객 조건(filters)을 쓰지 않음"
+        ok = any((c["params"] or {}).get("filters") or set((c["params"] or {}).get("dims") or []) & {"연령대", "성별", "지역"}
+                 for c in calls if "result" in c)
+        return ok, "연령·성별·지역으로 나눠 봄(내용은 사람 확인)" if ok else "연령·성별·지역으로 나눠 보지 않음"
     if qid == 20 and not any(c["tool"] == "explain_revenue_change" for c in calls):
         # 매출 분해 대신 핵심 지표로 답해도, 최근 2주 매출이 늘었다는 사실을 바로잡으면 정답
         k = [c for c in calls if c["tool"] == "get_kpis" and "result" in c and c["result"]["period"].startswith("2026-09-17")]

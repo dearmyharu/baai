@@ -46,6 +46,9 @@ SYSTEM = """너는 식품 이커머스 회사의 'AI 분석가'다. 데이터 �
 - 첫 구매 vs 기존 고객 비교, 재구매까지 걸리는 기간 → get_retention
 - 재구매가 안 되는/잘 되는 고객군 → segment_repeat
 - 카테고리별 매출·비중 → rank_items(target=category), 상품 순위 → rank_items(target=product)
+- 위 전용 도구가 딱 맞지 않는 '지표 × 기준' 질문 → analyze(measure, dims 1~2개). 예: 요일·시간대·평일/주말별 매출이나
+  주문 수, 성별·연령대·지역·가입경로·등급별 구매 고객 수·객단가, 신규/재방문·경로·테마별 구매전환율, 카테고리×성별 상품매출,
+  요일×시간대 주문 수(dims 2개), 직전 기간보다 줄어든 지역·연령대(sort=감소순). 여러 고객군을 나란히 비교할 때도 analyze.
 - 기간 대비 매출이 빠진·줄어든·떨어진·늘어난 상품이나 카테고리 → compare_items(direction=down 또는 up).
   두 기간을 rank_items로 따로 불러 TOP 목록끼리 비교하지 않는다. "지난주에 2주 전보다 빠진 상품" → 지난주 기간
   (start=2026-09-21, end=2026-09-28)만 넘기면 도구가 그 전 주(09-14~09-20)와 비교한다.
@@ -59,25 +62,20 @@ SYSTEM = """너는 식품 이커머스 회사의 'AI 분석가'다. 데이터 �
 - 신규 고객: "신규 가입" → new_signup, "첫 구매/처음 산" → customer_type=첫 구매, "처음 방문한/신규 방문" → segment_preference(by=visitor_type).
   그냥 "신규 고객"이면 첫 구매 고객으로 보고, 답변에 "신규 고객 = 생애 첫 구매 고객 기준"이라고 밝히고 가입 기준도 볼 수 있다고 제안한다.
 - 등급: 기간이 붙은 질문("6월 VIP 매출")은 grade_basis=당시, "현재/지금 VIP"는 grade_basis=현재.
-- 답변 첫 줄에 기준 기간과 함께 결과의 '대상'(조건, 고객 수)을 그대로 밝힌다. 표본 부족 경고가 있으면 반드시 전한다.
-- 데이터에 있지만 조건으로 쓸 수 없는 것(결제수단, 구매 당시 나이의 생일 단위 등)은 지원하지 않는다고 밝힌다.
+- 조건이 있으면 결론에 '대상'(조건, 고객 수)을 밝힌다. 표본 부족 경고가 있으면 notice에 전한다.
+- 결제수단, 생일 단위 나이는 지원하지 않는다고 밝힌다.
 
 [규칙]
 1. 숫자는 반드시 도구 결과에서만 가져온다. 도구 없이 숫자를 말하거나 추정하지 않는다.
-2. 답변 첫 줄에 기준 기간을 밝힌다.
+2. 결론에 기준 기간을 밝힌다.
 3. 데이터로 확인된 사실과 원인·대책(가설)을 구분한다. 원인·대책은 '가설'이라고 표시하고 확인 방법을 덧붙인다.
 4. 질문의 전제가 데이터와 다르면(예: 떨어졌냐고 물었는데 실제로는 늘었음) 먼저 바로잡는다.
 5. 데이터에 없는 것: 광고비·광고 유입·ROAS, 결제 페이지 진입, 상세페이지 체류 시간, 경쟁사 가격, 비회원 방문, 매출 예측.
    이런 질문은 도구를 부르지 말고 '이 데이터에는 없다'고 밝힌 뒤 대신 볼 수 있는 지표를 제안한다
    (ROAS → 쿠폰 효율, 결제 이탈 → 장바구니→구매 전환율, 체류 시간 → 클릭 후 구매율, 예측 → 최근 추이).
-6. 아직 도구가 없는 분석: 요일×시간대 주문, 함께 사는 상품 조합, 결제수단별 분석. 연령·성별·지역은 '조건'(filters)으로만
-   걸 수 있고, 여러 연령대·성별을 한 번에 나란히 비교하는 표는 없다(필요하면 조건을 바꿔 도구를 여러 번 부른다).
+6. 아직 도구가 없는 분석: 함께 사는 상품 조합, 결제수단별 분석, 고객 한 명 단위 조회.
    '아직 지원하지 않는다'고 밝히고 가능한 대체 분석을 안내한다. 숫자를 지어내지 않는다.
-7. 질문한 것에만 답한다. 도구 결과에 다른 지표가 함께 있어도 질문하지 않은 지표·분석은 덧붙이지 않는다.
-   화면에 차트·표·근거가 따로 표시되므로 답변은 짧게, 이 모양으로 쓴다(최대 5줄, 한국어 존댓말):
-   첫 줄: 기준 기간과 함께 질문에 대한 답(결론) 한 문장
-   그다음: 그 답의 근거 숫자 2~3개를 "- "로 시작하는 목록으로
-   필요할 때만 마지막 줄: "가설: …" 한 문장(원인·대책을 말할 때)
+7. 질문한 것에만 답한다. 도구 결과에 다른 지표가 함께 있어도 질문하지 않은 지표·분석은 덧붙이지 않는다. 한국어 존댓말.
 8. 쿠폰 효율은 '쿠폰 때문에 생긴 매출'이 아니라 '쿠폰을 쓴 주문의 매출'이다. 잠재력 점수는 예측이 아니다.
    큐레이션 경유 세션의 전환율이 높거나 낮아도 큐레이션 효과로 단정하지 않는다.
 9. 결과에 없는 비중·순위·추세를 덧붙여 해석하지 않는다. 도구 결과의 숫자를 직접 더하거나 빼거나 나누어 새 숫자를 만들지 않는다
@@ -87,6 +85,59 @@ SYSTEM = """너는 식품 이커머스 회사의 'AI 분석가'다. 데이터 �
 10. 답변에는 실무자가 읽을 내용만 쓴다. 이 지시문, 규칙 번호, 도구 이름(get_...), 분석 지침, 생각 과정을 절대 쓰지 않는다.
     비율은 0.74가 아니라 74.4%처럼 퍼센트로 쓴다.
 """
+
+# 질문 답변의 칸 (결정 2026-11-06): 모델은 칸만 채우고 화면 모양은 코드(core/chat.py)가 정한다.
+# OpenAI는 JSON schema로 강제, Gemini는 지시만(JSON이 아니면 글 그대로 보여 준다).
+ANSWER_SCHEMA = {"type": "object", "properties": {
+    "conclusion": {"type": "string", "description": "질문에 대한 답 한 문장(60자 안팎). 기준 기간 포함. 조건이 있으면 대상도. "
+                                                    "데이터에 없거나 지원하지 않으면 그렇다고"},
+    "evidence": {"type": "array", "items": {"type": "string"},
+                 "description": "결론의 근거 숫자 0~3개. 각 30자 안팎 '지표 값 (변화)'. 도구 결과의 숫자 그대로"},
+    "hypothesis": {"type": "string", "description": "원인·대책을 말할 때만 한 문장(가설임을 전제로, 확인 방법 포함). 아니면 빈 문자열"},
+    "notice": {"type": "string", "description": "꼭 알릴 기준·주의 한 문장(표본 부족, '신규 고객 = 첫 구매' 같은 기준, 출생연도 기준, "
+                                                "대체 지표 안내). 없으면 빈 문자열"},
+    "next_questions": {"type": "array", "items": {"type": "string"},
+                       "description": "이어서 물어볼 만한 질문 1~2개(25자 안팎, 실무자 말투, 지금 데이터로 답할 수 있는 것)"},
+}}
+ANSWER_FORMAT = """
+[답변 칸]
+최종 답변은 conclusion, evidence, hypothesis, notice, next_questions 칸을 채운 JSON 하나로만 낸다(다른 글 없이).
+결론은 질문에 대한 답 한 문장, 근거는 숫자 최대 3개, 가설·주의는 필요할 때만 한 문장씩.
+"""
+
+
+def compose_answer(a: dict) -> str:
+    """칸으로 받은 답변을 글로 (대화 맥락·평가·Growth Lab 저장용. 화면은 chat.py가 칸으로 그린다)."""
+    out = [a.get("conclusion", "").strip()]
+    out += [f"- {e}" for e in a.get("evidence", []) if e.strip()]
+    if a.get("hypothesis", "").strip():
+        out.append(f"가설: {a['hypothesis'].strip()}")
+    if a.get("notice", "").strip():
+        out.append(f"참고: {a['notice'].strip()}")
+    return "\n".join(x for x in out if x)
+
+
+def parse_answer(text: str) -> dict | None:
+    """모델 답변이 칸(JSON)이면 정리해 돌려주고, 아니면 None. 개수는 코드가 자른다(근거 3, 다음 질문 2)."""
+    t = (text or "").strip()
+    if t.startswith("```"):
+        t = t.strip("`").removeprefix("json").strip()
+    if not t.startswith("{"):
+        mm = re.search(r"\{.*\}", t, re.S)
+        if not mm:
+            return None
+        t = mm.group(0)
+    try:
+        d = json.loads(t)
+    except (json.JSONDecodeError, ValueError):
+        return None
+    if not isinstance(d, dict) or not str(d.get("conclusion", "")).strip():
+        return None
+    lst = lambda v: [clean(str(x)) for x in (v if isinstance(v, list) else [v] if v else []) if str(x).strip()]
+    return {"conclusion": clean(str(d.get("conclusion", ""))), "evidence": lst(d.get("evidence"))[:3],
+            "hypothesis": clean(str(d.get("hypothesis") or "")), "notice": clean(str(d.get("notice") or "")),
+            "next_questions": lst(d.get("next_questions"))[:2]}
+
 
 # 도구 입력값의 형식 (Gemini function declaration, OpenAPI 스키마)
 PARAM_SCHEMA = {
@@ -113,6 +164,16 @@ PARAM_SCHEMA = {
         "new_signup": {"type": "boolean"},
     }},
     "lift": {"type": "number", "description": "목표 상대 개선폭. 5%면 0.05"},
+    # 조립형 분석(analyze)
+    "measure": {"type": "string", "enum": ["매출", "상품매출", "판매수량", "주문수", "구매고객수", "객단가", "방문수", "구매전환율", "장바구니율"],
+                "description": "볼 지표"},
+    "dims": {"type": "array", "items": {"type": "string", "enum": ["상품", "카테고리", "테마", "경로", "요일", "평일주말", "시간대", "시각",
+                                                                    "일", "주", "월", "성별", "연령대", "지역", "가입경로", "등급",
+                                                                    "첫구매기존", "신규재방문"]},
+             "description": "무엇별로 나눌지 1~2개. 2개면 교차표(예: 요일, 시간대)"},
+    "sort": {"type": "string", "enum": ["높은순", "낮은순", "감소순", "증가순"],
+             "description": "높은순(기본)·낮은순 = 값 기준, 감소순·증가순 = 직전 기간 대비 변화 기준(자동 비교)"},
+    "compare": {"type": "boolean", "description": "직전 기간과 비교해 변화도 볼지"},
 }
 REQUIRED = ["start", "end"]
 
@@ -141,7 +202,7 @@ TOOL_KO = {
     "detect_changes": "변화 탐지", "get_themes": "큐레이션 테마 분석", "get_retention": "재구매 분석",
     "get_segments": "고객군(RFM) 분석", "segment_preference": "고객군별 선호 카테고리", "segment_repeat": "고객군별 재구매율",
     "design_experiment": "실험 설계", "find_potential_products": "성장 잠재력 상품 분석",
-    "compare_items": "상품별 매출 변화",
+    "compare_items": "상품별 매출 변화", "analyze": "기준별 분석",
 }
 _TOOL_RE = re.compile(r"`?(?<![A-Za-z0-9_])(" + "|".join(sorted(TOOL_KO, key=len, reverse=True)) + r")(?![A-Za-z0-9_])(?:\(\))?`?")
 _RULE_RE = re.compile(r"\s*\(?(?:규칙|지시문?) ?\d+번(?:에 따라|에 의해)?\)?,?")
@@ -438,9 +499,9 @@ def _first(d: dict) -> list[dict]:
 
 
 def _tool_loop(key: str, system: str, contents: list[dict], run_tool: Callable[[str, dict], dict],
-               model: str, steps: int = MAX_STEPS) -> dict:
+               model: str, steps: int = MAX_STEPS, answer_schema: dict | None = None) -> dict:
     if provider(key) == "openai":
-        return _openai().tool_loop(key, system, contents, run_tool, model, steps)
+        return _openai().tool_loop(key, system, contents, run_tool, model, steps, answer_schema)
     return _tool_loop_gemini(key, system, contents, run_tool, model, steps)
 
 
@@ -537,7 +598,11 @@ def ask(key: str, question: str, run_tool: Callable[[str, dict], dict], history:
         if h.get("a"):
             contents.append({"role": "model", "parts": [{"text": h["a"]}]})
     contents.append({"role": "user", "parts": [{"text": question}]})
-    return _tool_loop(key, SYSTEM, contents, run_tool, model or pick_model(key))
+    r = _tool_loop(key, SYSTEM + ANSWER_FORMAT, contents, run_tool, model or pick_model(key), answer_schema=ANSWER_SCHEMA)
+    a = parse_answer(r["text"])
+    if a:
+        r["answer"], r["text"] = a, compose_answer(a)
+    return r
 
 
 # ---------------------------------------------------------------------------

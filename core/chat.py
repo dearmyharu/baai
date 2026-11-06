@@ -56,6 +56,17 @@ def draw_chart(c: dict):
             y=alt.Y(f"{c['y']}:Q", title=None, axis=alt.Axis(format=c.get("y_fmt", ",.0f"))),
             tooltip=[alt.Tooltip(f"{c['x']}:T"), alt.Tooltip(c["y"], format=",.0f")])
         h = 280
+    elif kind == "heatmap":   # 기준 2개 교차표
+        enc_x = alt.X(f"{c['x']}:O", title=None, sort=c.get("x_order") or "ascending", axis=alt.Axis(labelAngle=0))
+        enc_y = alt.Y(f"{c['y']}:O", title=None, sort=c.get("y_order") or "ascending",
+                      axis=alt.Axis(labelOverlap=False, labelLimit=160))
+        h = max(200, 44 * d[c["y"]].nunique())
+        base = alt.Chart(d).encode(x=enc_x, y=enc_y).properties(height=h)
+        rect = base.mark_rect(cornerRadius=2).encode(
+            color=alt.Color(f"{c['value']}:Q", scale=alt.Scale(scheme="greens"), legend=None),   # 칸 안에 숫자가 있어 범례 생략
+            tooltip=[c["y"], c["x"], alt.Tooltip(c["value"], format=c.get("fmt", ",.0f"))])
+        text = base.mark_text(fontSize=10).encode(text=alt.Text(f"{c['value']}:Q", format=c.get("fmt", ",.0f")))
+        ch = alt.layer(rect, text).properties(height=h)
     else:  # scatter
         enc = dict(
             x=alt.X(f"{c['x']}:Q", title=c["x"], scale=alt.Scale(type="log") if c.get("x_log") else alt.Scale(zero=False),
@@ -86,11 +97,27 @@ def show_result(res: dict, folded: bool = False):
             st.markdown(f"- {f}")
         if res.get("chart") is not None:
             draw_chart(res["chart"])
-        if res.get("table") is not None:
-            st.dataframe(res["table"], hide_index=True, width="stretch")
+        tbl = res.get("display_table") if res.get("display_table") is not None else res.get("table")
+        if tbl is not None:
+            st.dataframe(tbl, hide_index=True, width="stretch")
         for n in res.get("notes", []):
             ui.note(n)
 
+
+
+def show_answer(a: dict):
+    """칸으로 받은 답변을 항상 같은 모양으로: 결론(굵게) → 근거 숫자 → 가설 → 참고."""
+    st.markdown(f"**{a['conclusion']}**")
+    if a.get("evidence"):
+        st.markdown("\n".join(f"- {x}" for x in a["evidence"]))
+    if a.get("hypothesis"):
+        st.markdown(f":orange-badge[가설] {a['hypothesis']}")
+    if a.get("notice"):
+        st.caption(f"ℹ️ {a['notice']}")
+
+
+def ask_next(q: str):
+    st.session_state.pending_q = q
 
 
 def save_to_lab(e: dict, res: dict, key: str):
@@ -133,7 +160,7 @@ def _answer(m, key, log: list, question: str, tool: str | None = None, params: d
         try:
             with st.spinner("데이터를 찾아 분석하는 중..."):
                 r = llm.ask(key, question, lambda name, p: tools.run(m, name, **p), history)
-            entry.update(a=r["text"], model=r["model"], usage=llm.usage_label(r["model"], r.get("usage")), clarify=r.get("clarify"),
+            entry.update(a=r["text"], answer=r.get("answer"), model=r["model"], usage=llm.usage_label(r["model"], r.get("usage")), clarify=r.get("clarify"),
                          unverified=llm.unsupported_in_answer(r["text"], r["calls"]),
                          results=[c["result"] for c in r["calls"] if "result" in c],
                          calls=[{"tool": c["tool"], "params": dict(c["params"])} for c in r["calls"] if "result" in c],
@@ -204,7 +231,9 @@ def render(m):
                 with st.chat_message("user"):
                     st.markdown(e["q"])
                 with st.chat_message("assistant"):
-                    if e.get("a"):
+                    if e.get("answer"):
+                        show_answer(e["answer"])
+                    elif e.get("a"):
                         st.markdown(e["a"])
                     if e.get("unverified"):
                         st.warning(f"분석 결과에서 찾지 못한 숫자가 있습니다: {', '.join(e['unverified'])}. "
@@ -225,6 +254,11 @@ def render(m):
                             if st.button(lab, key=f"clar_{len(log)}_{j}", use_container_width=True):
                                 st.session_state.pending_q = llm.with_period(e["q"], lab)
                                 st.rerun()
+                    if e is log[-1] and (e.get("answer") or {}).get("next_questions"):
+                        st.caption("이어서 물어보기")
+                        for j, nq in enumerate(e["answer"]["next_questions"]):
+                            st.button(nq, key=f"next_{i}_{j}", icon=":material/subdirectory_arrow_right:",
+                                      on_click=ask_next, args=(nq,), use_container_width=True)
                     if e.get("tools") and e.get("model"):
                         st.caption(f"사용한 분석: {' · '.join(e['tools'])} · 모델 {e['model']}"
                                    + (f" · {e['usage']}" if e.get("usage") else ""))

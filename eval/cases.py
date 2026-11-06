@@ -123,6 +123,17 @@ def q25(m):
     return {"기준별": out, "주의": "30일 재구매율이며, 낮은 이유는 데이터로 확인된 사실이 아니라 가설로 제시해야 함"}
 
 
+def q17(m):
+    """9월 완료 주문을 요일 × 시간대(6구간)로 센 표에서 가장 많은 칸 (도구와 따로 계산)."""
+    o = M.completed_orders(m, *THIS_MONTH)
+    wd = o["order_time"].dt.dayofweek.map(dict(enumerate("월화수목금토일")))
+    dp = pd.cut(o["order_time"].dt.hour, bins=[-1, 5, 10, 13, 17, 21, 23],
+                labels=["심야(0-5시)", "아침(6-10시)", "점심(11-13시)", "오후(14-17시)", "저녁(18-21시)", "밤(22-23시)"]).astype(str)
+    c = o.groupby([wd, dp])["order_id"].nunique().sort_values(ascending=False)
+    (w, d), n = c.index[0], int(c.iloc[0])
+    return {"가장 많은 칸": {"요일": w, "시간대": d, "주문 수": n}, "주의": "요일·시간대 교차로 봐야 정답(한쪽만 보면 부분 정답)"}
+
+
 def q18(m):
     g = M.repeat_gaps(m)
     rr = M.repeat_rates(m)
@@ -252,11 +263,12 @@ CASES = [
     dict(id=14, level="L2", q="큐레이션으로 들어온 고객이 일반 탐색보다 더 잘 사?", period="2026-09", tool="get_funnel",
          check=FACTS + ". 유의성(p값)과 '효과로 단정할 수 없음'을 함께 말해야 함", expected=q14),
     dict(id=15, level="L2", q="고객군마다 잘 팔리는 카테고리가 달라?", period="2026-09", tool="segment_preference", check=FACTS, expected=q15),
-    dict(id=16, level="L2", q="연령대나 성별, 지역에 따라 구매가 달라?", period="2026-09", tool="get_kpis 등 + filters", check=FACTS,
-         expected=lambda m: {"상태": "2026-11-03 고객 조건 필터 추가로 지원(이전: 미지원). 조건별로 도구를 나눠 불러 비교",
+    dict(id=16, level="L2", q="연령대나 성별, 지역에 따라 구매가 달라?", period="2026-09", tool="analyze(dims=연령대·성별·지역) 또는 filters",
+         check=FACTS,
+         expected=lambda m: {"상태": "2026-11-03 고객 조건 필터, 2026-11-06 조립형 분석(analyze)으로 지원. 기준별로 나란히 비교",
                              "주의": "연령은 출생연도 기준 근사, 차이는 가설로만"}),
-    dict(id=17, level="L2", q="무슨 요일, 몇 시에 주문이 많아?", period="2026-09", tool="(미지원)", check=PARTIAL,
-         expected=lambda m: {"상태": "요일×시간대 주문 집계 도구 없음", "대체 안내": "테마·퍼널 구간을 평일/주말·시간대로 나눠 보기"}),
+    dict(id=17, level="L2", q="무슨 요일, 몇 시에 주문이 많아?", period="2026-09", tool="analyze(주문수, 요일×시간대)", check=FACTS,
+         expected=q17),   # 2026-11-06 조립형 분석으로 지원(이전: 미지원 안내가 정답)
     dict(id=18, level="L2", q="첫 구매하고 다시 사기까지 얼마나 걸려?", period="전체 관측 기간", tool="get_retention", check=EXACT, expected=q18),
     # L3 탐색·진단
     dict(id=19, level="L3", q="이번 달 눈에 띄게 변한 거 있어?", period="2026-09 vs 2026-08 (엄격 p<0.05)", tool="detect_changes",

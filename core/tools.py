@@ -14,6 +14,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Callable
 
+import numpy as np
 import pandas as pd
 
 from . import metrics as M
@@ -181,6 +182,158 @@ def compare_items(m, start, end, target="product", direction="down", n=5, metric
         notes.append("상품매출 = 완료 주문의 쿠폰 차감 후 상품금액(배송비 제외)")
     title = f"{unit}이 {'줄어든' if down else '늘어난'} {what} TOP {int(n)}"
     return _result(title, plabel, facts, chart, table, notes)
+
+
+SLICE_SUFFIX = {"주문수": "건", "구매고객수": "명", "판매수량": "개", "방문수": "세션"}
+ITEM_ONLY = {"상품", "카테고리"}
+
+
+def _slice_fmt(metric):
+    unit = M.SLICE_METRICS[metric][1]
+    if unit == "won":
+        return won, lambda v: ("+" if v > 0 else "") + won(v)
+    if unit == "rate":
+        return pct, lambda v: f"{v * 100:+.1f}%p"
+    suf = SLICE_SUFFIX.get(metric, "")
+    return (lambda v: f"{v:,.0f}{suf}"), (lambda v: f"{v:+,.0f}{suf}")
+
+
+def _dim_label(v):
+    return f"{v:%Y-%m-%d}" if isinstance(v, pd.Timestamp) else f"{v}시" if isinstance(v, (int, float)) and not isinstance(v, bool) else str(v)
+
+
+def analyze(m, start, end, measure="매출", dims=None, sort="높은순", n=10, compare=False):
+    """조립형 분석: 지표(measure) × 기준(dims, 1~2개) × 기간(+ 직전 기간 비교). 계산은 metrics.slice_metric.
+    (입력 이름이 다른 도구의 metric·by와 겹치지 않게 measure·dims를 쓴다)"""
+    metric = measure
+    by = [dims] if isinstance(dims, str) else list(dims or [])
+    by = list(dict.fromkeys(by))[:2]
+    if not by:
+        raise ValueError("dims(무엇별로 볼지)를 1~2개 골라야 합니다. 예: ['요일'], ['카테고리', '성별']")
+    bad = [b for b in by if b not in M.SLICE_DIMS]
+    if bad or metric not in M.SLICE_METRICS:
+        raise ValueError(f"지원하지 않는 {'기준: ' + ', '.join(bad) if bad else '지표: ' + str(metric)}. "
+                         f"지표: {', '.join(M.SLICE_METRICS)} / 기준: {', '.join(M.SLICE_DIMS)}")
+    notes = []
+    if ITEM_ONLY & set(by):
+        if metric == "매출":
+            metric = "상품매출"
+            notes.append("상품·카테고리별 매출은 상품매출(쿠폰 차감 후 상품금액, 배송비 제외)로 계산")
+        if metric in ("객단가", "방문수", "구매전환율", "장바구니율"):
+            raise ValueError(f"{metric}은(는) 상품·카테고리별로 나눌 수 없습니다. 상품매출·판매수량·주문수·구매고객수를 쓰세요.")
+    unit = M.SLICE_METRICS[metric][0]
+    bad = [b for b in by if unit not in M.SLICE_DIMS[b][1] and not (b in ITEM_ONLY)]
+    if bad:
+        raise ValueError(f"{metric}은(는) 방문 단위 지표라 '{', '.join(bad)}' 기준으로 나눌 수 없습니다(주문 단위 기준).")
+    if sort in ("감소순", "증가순"):
+        compare = True
+    cur = _period(start, end)
+    prev = M.compare_period(*cur) if compare else None
+    if compare and prev is None:
+        raise ValueError("비교할 직전 기간이 데이터 범위(4/1~) 밖입니다.")
+    if unit == "order" and ITEM_ONLY & set(by):      # 주문수·구매고객수를 상품·카테고리별로
+        calc = lambda p: _item_slice(m, p, metric, by)
+    else:
+        calc = lambda p: M.slice_metric(m, *p, metric, by)
+    df = calc(cur)
+    rate = M.SLICE_METRICS[metric][1] == "rate"
+    if prev is not None:
+        dp = calc(prev).rename(columns={"값": "이전", "표본": "이전 표본"})
+        df = df.merge(dp, on=by, how="outer")
+        if not rate:
+            df[["값", "이전"]] = df[["값", "이전"]].fillna(0)
+        df["변화"] = df["값"] - df["이전"]
+        if not rate:
+            df["변화율"] = df["변화"] / df["이전"].replace(0, np.nan)
+    df["표본"] = df["표본"].fillna(0)
+    small = rate & (df["표본"] < 30)
+    fmt, dfmt = _slice_fmt(metric)
+    ordered = len(by) == 1 and (by[0] in M.ORDERED_DIMS or by[0] in M.TIME_DIMS)
+    if ordered and by[0] in M.ORDERED_DIMS:
+        df = df.assign(_o=df[by[0]].map({v: i for i, v in enumerate(M.ORDERED_DIMS[by[0]])})).sort_values("_o").drop(columns="_o")
+    elif ordered:
+        df = df.sort_values(by[0])
+    ok = df[~small] if rate else df
+    if sort in ("감소순", "증가순"):
+        ranked = ok[ok["변화"] < 0].sort_values("변화") if sort == "감소순" else ok[ok["변화"] > 0].sort_values("변화", ascending=False)
+    else:
+        ranked = ok.sort_values("값", ascending=sort == "낮은순")
+    name = lambda r: " · ".join(_dim_label(r[b]) for b in by)
+    facts = [f"지표: {M.SLICE_METRICS[metric][2]}, 기준: {' × '.join(by)}별"]
+    if prev is not None:
+        facts.append(f"비교: {_label(prev)} → {_label(cur)}")
+    show = df if (ordered and sort in ("높은순", "낮은순") and len(df) <= 12) else ranked.head(int(n))
+    for i, (_, r) in enumerate(show.iterrows()):
+        line = f"{name(r)}: {fmt(r['값'])}"
+        if prev is not None and pd.notna(r.get("이전")):
+            line += f" (비교 기간 {fmt(r['이전'])}, {dfmt(r['변화'])}" + \
+                    (f", {r['변화율'] * 100:+.1f}%" if not rate and pd.notna(r.get("변화율")) else "") + ")"
+        if rate and r["표본"] < 30:
+            line += f" - 표본 부족({int(r['표본'])}세션)"
+        facts.append(("" if show is df and ordered else f"{i+1}위 ") + line)
+    if ordered and len(ok) > 2 and sort in ("높은순", "낮은순"):
+        hi, lo = ok.loc[ok["값"].idxmax()], ok.loc[ok["값"].idxmin()]
+        facts.append(f"가장 높은 {by[0]}: {name(hi)} ({fmt(hi['값'])}), 가장 낮은 {by[0]}: {name(lo)} ({fmt(lo['값'])})")
+    if sort in ("감소순", "증가순") and ranked.empty:
+        facts.append(f"{'줄어든' if sort == '감소순' else '늘어난'} 항목이 없습니다.")
+    if rate and small.any():
+        notes.append("방문 30세션 미만 항목은 순위에서 빼고 '표본 부족'으로 표시")
+    notes.append(M.SLICE_METRICS[metric][2])
+    if "연령대" in by:
+        notes.append("연령은 출생연도 기준 근사 나이(생일 정보 없음). 출생연도 없는 고객은 '정보 없음'")
+    if unit == "session":
+        notes.append("방문은 로그인 고객 세션만 셈")
+    if {"주", "월"} & set(by):
+        notes.append("처음·마지막 주(월)가 기간 중간에 걸리면 값이 작게 보일 수 있음. 주는 월요일 시작")
+    # 차트
+    if len(by) == 2:
+        chart = {"kind": "heatmap", "data": df, "x": by[1], "y": by[0], "value": "값",
+                 "fmt": ".1%" if rate else ",.0f", "x_order": M.ORDERED_DIMS.get(by[1]), "y_order": M.ORDERED_DIMS.get(by[0])}
+    elif sort in ("감소순", "증가순"):
+        amt = "감소 크기" if sort == "감소순" else "증가 크기"
+        cd = ranked.head(int(n)).assign(**{amt: lambda d: d["변화"].abs(), by[0]: lambda d: d[by[0]].map(_dim_label)})
+        chart = {"kind": "bar", "data": cd, "x": amt, "y": by[0], "x_fmt": ".1%" if rate else "~s"} if len(cd) else None
+    elif by[0] in M.TIME_DIMS:
+        chart = {"kind": "line", "data": df, "x": by[0], "y": "값", "y_fmt": ".1%" if rate else "~s"}
+    elif ordered:
+        cd = df.assign(**{by[0]: df[by[0]].map(_dim_label)})
+        chart = {"kind": "bar", "vertical": True, "data": cd, "x": by[0], "y": "값", "y_fmt": ".1%" if rate else "~s"}
+    else:
+        cd = ranked.head(int(n)).assign(**{by[0]: lambda d: d[by[0]].map(_dim_label)})
+        chart = {"kind": "bar", "data": cd, "x": "값", "y": by[0], "x_fmt": ".1%" if rate else "~s"}
+    table = (df if ordered or len(by) == 2 else ranked.head(max(int(n), 30))).rename(columns={"값": metric})
+    title = f"{' × '.join(by)}별 {metric}" + (f" ({sort})" if not ordered and len(by) == 1 else "")
+    res = _result(title, _label(cur) + (f" (비교 {_label(prev)})" if prev is not None else ""), facts, chart, table, notes)
+    # 화면용 표: 숫자를 원·%·건으로 (AI에 넘기는 table은 원래 숫자 그대로)
+    disp = table.copy()
+    for b in by:
+        disp[b] = disp[b].map(_dim_label)
+    for col in (metric, "이전"):
+        if col in disp:
+            disp[col] = disp[col].map(lambda v: "–" if pd.isna(v) else fmt(v))
+    if "변화" in disp:
+        disp["변화"] = disp["변화"].map(lambda v: "–" if pd.isna(v) else dfmt(v))
+    if "변화율" in disp:
+        disp["변화율"] = disp["변화율"].map(lambda v: "–" if pd.isna(v) else f"{v * 100:+.1f}%")
+    disp = disp.rename(columns={"이전": "비교 기간", "표본": "표본(주문·세션 수)", "이전 표본": "비교 기간 표본"})
+    if len(by) == 2:     # 교차표는 행 = 첫 기준, 열 = 둘째 기준
+        pv = disp.pivot_table(index=by[0], columns=by[1], values=metric, aggfunc="first")
+        for i, b in enumerate(by):
+            order = [_dim_label(v) for v in (M.ORDERED_DIMS.get(b) or [])]
+            if order:
+                pv = pv.reindex(order, axis=i).dropna(how="all", axis=i)
+        disp = pv.fillna("–").reset_index()
+        disp.columns.name = None
+    res["display_table"] = disp
+    return res
+
+
+def _item_slice(m, p, metric, by):
+    """주문수·구매고객수를 상품·카테고리별로: 주문상품 단위에서 고유 주문·고객을 센다."""
+    df = M._slice_frame(m, "item", *p, by)
+    g = df.groupby(by, dropna=False, observed=True)
+    col = "order_id" if metric == "주문수" else "customer_id"
+    return g.agg(값=(col, "nunique"), 표본=("order_id", "nunique")).reset_index()
 
 
 def get_trend(m, start, end, grain="month"):
@@ -410,7 +563,7 @@ def with_filters(name: str, fn: Callable) -> Callable:
     return run
 
 
-FILTERABLE = {"get_kpis", "get_coupon_efficiency", "rank_items", "compare_items", "explain_revenue_change", "get_trend", "get_funnel",
+FILTERABLE = {"get_kpis", "get_coupon_efficiency", "rank_items", "compare_items", "analyze", "explain_revenue_change", "get_trend", "get_funnel",
               "segment_preference", "segment_repeat", "get_segments"}
 
 _TOOL_LIST = [
@@ -427,6 +580,12 @@ _TOOL_LIST = [
          "직전 기간(달이면 전달, 달력 주면 그 전 주)과 자동 비교",
          PERIOD | {"target": "product | category", "direction": "down | up", "n": "개수", "metric": "매출 | 수량"},
          compare_items, []),
+    Tool("analyze", "조립형 분석: 지표(measure)를 기준(dims, 1~2개)별로 나눠 보고, 필요하면 직전 기간과 비교. 다른 전용 도구가 "
+         "딱 맞지 않는 '무엇을 × 무엇별로' 질문에 쓴다. 예: 요일별·시간대별·평일/주말 매출, 성별·연령대·지역·가입경로·등급별 "
+         "구매 고객 수나 객단가, 신규/재방문·경로·테마별 구매전환율, 카테고리×성별 상품매출, 요일×시간대 주문 수, "
+         "지난주보다 줄어든 지역(sort=감소순). 방문 지표(방문수·구매전환율·장바구니율)는 상품·카테고리·첫구매기존으로 못 나눈다",
+         PERIOD | {"measure": "지표", "dims": "기준 1~2개", "sort": "높은순 | 낮은순 | 감소순 | 증가순", "n": "개수",
+                   "compare": "직전 기간과 비교"}, analyze, []),
     Tool("explain_revenue_change", "직전 기간 대비 완료 매출 변화를 주문 수 효과와 객단가 효과로 분해하고 함께 달라진 지표 제시",
          PERIOD, explain_revenue_change, [10, 20]),
     Tool("get_trend", "완료 매출·주문 수 추이. 기간 언급이 없으면 전체 기간(start=2026-04-01, end=2026-10-01)", PERIOD | {"grain": "date | week | month"}, get_trend, [11]),
@@ -490,4 +649,6 @@ EXAMPLES = [
     ("쿠폰 할인해 준 만큼 매출이 나왔어?", "get_coupon_efficiency", dict(start=SEP[0], end=SEP[1])),
     ("안 돌아오는 고객이 얼마나 돼?", "get_segments", dict(start=SEP[0], end=SEP[1])),
     ("지난주에 2주 전보다 매출이 빠진 상품 보여줘", "compare_items", dict(start="2026-09-21", end="2026-09-28")),
+    ("이번 달 요일·시간대별 주문 수는?", "analyze", dict(start=SEP[0], end=SEP[1], measure="주문수", dims=["요일", "시간대"])),
+    ("신규 방문이랑 재방문 중 구매전환율이 높은 쪽은?", "analyze", dict(start=SEP[0], end=SEP[1], measure="구매전환율", dims=["신규재방문"])),
 ]

@@ -249,8 +249,9 @@ CASES = [
     # 미지원·범위 밖 (새 질문)
     dict(id="H23", level="범위 밖", q="인스타그램 광고 효율은 어때?", kind="refuse"),
     dict(id="H24", level="범위 밖", q="다음 달 매출 얼마나 나올 것 같아?", kind="refuse"),
-    dict(id="H25", level="범위 밖", q="남성 고객이 많이 사는 상품은?", kind="refuse"),
-    dict(id="H26", level="범위 밖", q="주말이랑 평일 중에 언제 더 많이 팔려?", kind="refuse"),
+    # H25·H26: 정답 기준 갱신(2026-11-03 고객 조건 필터, 2026-11-06 조립형 분석으로 답할 수 있게 됨. 이 문항으로 튜닝하지 않음)
+    dict(id="H25", level="범위 밖→지원", q="남성 고객이 많이 사는 상품은?", kind="tool", tools={"rank_items", "analyze"}),
+    dict(id="H26", level="범위 밖→지원", q="주말이랑 평일 중에 언제 더 많이 팔려?", kind="tool", tools={"analyze"}),
     dict(id="H27", level="범위 밖", q="상품 리뷰 평점이 제일 높은 건 뭐야?", kind="refuse"),
     dict(id="H28", level="범위 밖", q="우리 가격이 쿠팡보다 비싸?", kind="refuse"),
 ]
