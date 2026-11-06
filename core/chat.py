@@ -9,7 +9,7 @@ from __future__ import annotations
 import altair as alt
 import streamlit as st
 
-from core import llm, store, tools, ui
+from core import llm, popup, store, tools, ui
 
 EXAMPLES_SHOWN = 6        # 대화가 비어 있을 때 보여 줄 예시 질문 수
 
@@ -111,7 +111,8 @@ def save_to_lab(e: dict, res: dict, key: str):
 def _run_direct(m, tool: str, params: dict) -> dict:
     """LLM 없이 정해진 도구를 바로 실행 (키가 없을 때 예시 질문용)."""
     try:
-        return {"a": "", "results": [tools.run(m, tool, **params)], "tools": [tool]}
+        return {"a": "", "results": [tools.run(m, tool, **params)], "tools": [tool],
+                "calls": [{"tool": tool, "params": dict(params)}]}
     except Exception as e:  # 기간이 데이터 밖이거나 계산 불가
         return {"a": f"이 질문은 지금 데이터로 답하기 어렵습니다: {e}"}
 
@@ -126,6 +127,7 @@ def _answer(m, key, log: list, question: str, tool: str | None = None, params: d
             entry.update(a=r["text"], model=r["model"], usage=llm.usage_label(r["model"], r.get("usage")), clarify=r.get("clarify"),
                          unverified=llm.unsupported_in_answer(r["text"], r["calls"]),
                          results=[c["result"] for c in r["calls"] if "result" in c],
+                         calls=[{"tool": c["tool"], "params": dict(c["params"])} for c in r["calls"] if "result" in c],
                          tools=[f"{llm.TOOL_KO.get(c['tool'], c['tool'])}({', '.join(f'{k}={v}' for k, v in c['params'].items())})" for c in r["calls"]])
         except Exception as e:  # API 오류·시간 초과 등: 앱이 멈추지 않게 안내만 한다
             msg = str(e) if isinstance(e, llm.LLMError) else f"AI 분석 중 문제가 생겼습니다({type(e).__name__}). 다시 질문해 주세요."
@@ -195,6 +197,10 @@ def render(m):
                     for j, res in enumerate(e.get("results", [])):
                         show_result(res)
                         save_to_lab(e, res, key=f"lab_{i}_{j}")
+                    spec = popup.spec_from_calls(e.get("calls"))
+                    if spec and st.button("대시보드로 보기", key=f"dash_{i}", icon=":material/dashboard:",
+                                          help="이 질문의 기간·조건으로 지표·추이·카테고리·상품 순위를 한 화면에 띄웁니다."):
+                        popup.open_dashboard(m, spec, e["q"], e.get("results", []), key=f"dash_{i}")
                     if e.get("clarify") and e is log[-1]:
                         for j, lab in enumerate(e["clarify"]):
                             if st.button(lab, key=f"clar_{len(log)}_{j}", use_container_width=True):
