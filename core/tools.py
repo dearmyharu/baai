@@ -17,6 +17,7 @@ from typing import Callable
 import numpy as np
 import pandas as pd
 
+from . import analysis as A
 from . import metrics as M
 from .data import PERIOD_END, PERIOD_START
 
@@ -189,7 +190,7 @@ ITEM_ONLY = {"상품", "카테고리"}
 
 
 def _slice_fmt(metric):
-    unit = M.SLICE_METRICS[metric][1]
+    unit = A.SLICE_METRICS[metric][1]
     if unit == "won":
         return won, lambda v: ("+" if v > 0 else "") + won(v)
     if unit == "rate":
@@ -210,10 +211,10 @@ def analyze(m, start, end, measure="매출", dims=None, sort="높은순", n=10, 
     by = list(dict.fromkeys(by))[:2]
     if not by:
         raise ValueError("dims(무엇별로 볼지)를 1~2개 골라야 합니다. 예: ['요일'], ['카테고리', '성별']")
-    bad = [b for b in by if b not in M.SLICE_DIMS]
-    if bad or metric not in M.SLICE_METRICS:
+    bad = [b for b in by if b not in A.SLICE_DIMS]
+    if bad or metric not in A.SLICE_METRICS:
         raise ValueError(f"지원하지 않는 {'기준: ' + ', '.join(bad) if bad else '지표: ' + str(metric)}. "
-                         f"지표: {', '.join(M.SLICE_METRICS)} / 기준: {', '.join(M.SLICE_DIMS)}")
+                         f"지표: {', '.join(A.SLICE_METRICS)} / 기준: {', '.join(A.SLICE_DIMS)}")
     notes = []
     if ITEM_ONLY & set(by):
         if metric == "매출":
@@ -221,8 +222,8 @@ def analyze(m, start, end, measure="매출", dims=None, sort="높은순", n=10, 
             notes.append("상품·카테고리별 매출은 상품매출(쿠폰 차감 후 상품금액, 배송비 제외)로 계산")
         if metric in ("객단가", "방문수", "구매전환율", "장바구니율"):
             raise ValueError(f"{metric}은(는) 상품·카테고리별로 나눌 수 없습니다. 상품매출·판매수량·주문수·구매고객수를 쓰세요.")
-    unit = M.SLICE_METRICS[metric][0]
-    bad = [b for b in by if unit not in M.SLICE_DIMS[b][1] and not (b in ITEM_ONLY)]
+    unit = A.SLICE_METRICS[metric][0]
+    bad = [b for b in by if unit not in A.SLICE_DIMS[b][1] and not (b in ITEM_ONLY)]
     if bad:
         raise ValueError(f"{metric}은(는) 방문 단위 지표라 '{', '.join(bad)}' 기준으로 나눌 수 없습니다(주문 단위 기준).")
     if sort in ("감소순", "증가순"):
@@ -234,9 +235,9 @@ def analyze(m, start, end, measure="매출", dims=None, sort="높은순", n=10, 
     if unit == "order" and ITEM_ONLY & set(by):      # 주문수·구매고객수를 상품·카테고리별로
         calc = lambda p: _item_slice(m, p, metric, by)
     else:
-        calc = lambda p: M.slice_metric(m, *p, metric, by)
+        calc = lambda p: A.slice_metric(m, *p, metric, by)
     df = calc(cur)
-    rate = M.SLICE_METRICS[metric][1] == "rate"
+    rate = A.SLICE_METRICS[metric][1] == "rate"
     if prev is not None:
         dp = calc(prev).rename(columns={"값": "이전", "표본": "이전 표본"})
         df = df.merge(dp, on=by, how="outer")
@@ -248,9 +249,9 @@ def analyze(m, start, end, measure="매출", dims=None, sort="높은순", n=10, 
     df["표본"] = df["표본"].fillna(0)
     small = rate & (df["표본"] < 30)
     fmt, dfmt = _slice_fmt(metric)
-    ordered = len(by) == 1 and (by[0] in M.ORDERED_DIMS or by[0] in M.TIME_DIMS)
-    if ordered and by[0] in M.ORDERED_DIMS:
-        df = df.assign(_o=df[by[0]].map({v: i for i, v in enumerate(M.ORDERED_DIMS[by[0]])})).sort_values("_o").drop(columns="_o")
+    ordered = len(by) == 1 and (by[0] in A.ORDERED_DIMS or by[0] in A.TIME_DIMS)
+    if ordered and by[0] in A.ORDERED_DIMS:
+        df = df.assign(_o=df[by[0]].map({v: i for i, v in enumerate(A.ORDERED_DIMS[by[0]])})).sort_values("_o").drop(columns="_o")
     elif ordered:
         df = df.sort_values(by[0])
     ok = df[~small] if rate else df
@@ -259,7 +260,7 @@ def analyze(m, start, end, measure="매출", dims=None, sort="높은순", n=10, 
     else:
         ranked = ok.sort_values("값", ascending=sort == "낮은순")
     name = lambda r: " · ".join(_dim_label(r[b]) for b in by)
-    facts = [f"지표: {M.SLICE_METRICS[metric][2]}, 기준: {' × '.join(by)}별"]
+    facts = [f"지표: {A.SLICE_METRICS[metric][2]}, 기준: {' × '.join(by)}별"]
     if prev is not None:
         facts.append(f"비교: {_label(prev)} → {_label(cur)}")
     show = df if (ordered and sort in ("높은순", "낮은순") and len(df) <= 12) else ranked.head(int(n))
@@ -278,7 +279,7 @@ def analyze(m, start, end, measure="매출", dims=None, sort="높은순", n=10, 
         facts.append(f"{'줄어든' if sort == '감소순' else '늘어난'} 항목이 없습니다.")
     if rate and small.any():
         notes.append("방문 30세션 미만 항목은 순위에서 빼고 '표본 부족'으로 표시")
-    notes.append(M.SLICE_METRICS[metric][2])
+    notes.append(A.SLICE_METRICS[metric][2])
     if "연령대" in by:
         notes.append("연령은 출생연도 기준 근사 나이(생일 정보 없음). 출생연도 없는 고객은 '정보 없음'")
     if unit == "session":
@@ -288,12 +289,12 @@ def analyze(m, start, end, measure="매출", dims=None, sort="높은순", n=10, 
     # 차트
     if len(by) == 2:
         chart = {"kind": "heatmap", "data": df, "x": by[1], "y": by[0], "value": "값",
-                 "fmt": ".1%" if rate else ",.0f", "x_order": M.ORDERED_DIMS.get(by[1]), "y_order": M.ORDERED_DIMS.get(by[0])}
+                 "fmt": ".1%" if rate else ",.0f", "x_order": A.ORDERED_DIMS.get(by[1]), "y_order": A.ORDERED_DIMS.get(by[0])}
     elif sort in ("감소순", "증가순"):
         amt = "감소 크기" if sort == "감소순" else "증가 크기"
         cd = ranked.head(int(n)).assign(**{amt: lambda d: d["변화"].abs(), by[0]: lambda d: d[by[0]].map(_dim_label)})
         chart = {"kind": "bar", "data": cd, "x": amt, "y": by[0], "x_fmt": ".1%" if rate else "~s"} if len(cd) else None
-    elif by[0] in M.TIME_DIMS:
+    elif by[0] in A.TIME_DIMS:
         chart = {"kind": "line", "data": df, "x": by[0], "y": "값", "y_fmt": ".1%" if rate else "~s"}
     elif ordered:
         cd = df.assign(**{by[0]: df[by[0]].map(_dim_label)})
@@ -319,7 +320,7 @@ def analyze(m, start, end, measure="매출", dims=None, sort="높은순", n=10, 
     if len(by) == 2:     # 교차표는 행 = 첫 기준, 열 = 둘째 기준
         pv = disp.pivot_table(index=by[0], columns=by[1], values=metric, aggfunc="first")
         for i, b in enumerate(by):
-            order = [_dim_label(v) for v in (M.ORDERED_DIMS.get(b) or [])]
+            order = [_dim_label(v) for v in (A.ORDERED_DIMS.get(b) or [])]
             if order:
                 pv = pv.reindex(order, axis=i).dropna(how="all", axis=i)
         disp = pv.fillna("–").reset_index()
@@ -330,7 +331,7 @@ def analyze(m, start, end, measure="매출", dims=None, sort="높은순", n=10, 
 
 def _item_slice(m, p, metric, by):
     """주문수·구매고객수를 상품·카테고리별로: 주문상품 단위에서 고유 주문·고객을 센다."""
-    df = M._slice_frame(m, "item", *p, by)
+    df = A._slice_frame(m, "item", *p, by)
     g = df.groupby(by, dropna=False, observed=True)
     col = "order_id" if metric == "주문수" else "customer_id"
     return g.agg(값=(col, "nunique"), 표본=("order_id", "nunique")).reset_index()
