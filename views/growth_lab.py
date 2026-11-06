@@ -31,7 +31,7 @@ with st.expander("직접 문제 후보 추가", icon=":material/add:"):
             st.rerun()
 
 if not problems:
-    st.info("아직 저장된 문제 후보가 없습니다. 통합 현황의 '확인할 변화', 상품·큐레이션의 '관심과 구매의 차이', "
+    st.info("아직 저장된 문제 후보가 없습니다. AI 분석가 답변의 분석 결과, 통합 현황의 '확인할 변화', 상품·큐레이션의 '관심과 구매의 차이', "
             "고객 여정의 '구간 자세히 보기', 리텐션의 'RFM 고객군'에서 **Growth Lab에 저장**을 눌러 가져오세요.")
     st.page_link("views/overview.py", label="통합 현황으로 가기", icon=":material/arrow_forward:")
     st.stop()
@@ -75,8 +75,17 @@ with st.container(border=True):
         if obs.get("previous") is not None:
             line += f" ({ui.fmt_delta(obs['current'], obs['previous'], unit)})"
         st.markdown(line + f" · 영향 범위: {obs.get('segment', '–')}")
-    st.caption(f"정의: {obs.get('definition', '–')} · 표본 n={obs.get('n_current', '–')}"
-               + (f" · p={obs['p_value']:.3f}" if obs.get("p_value") is not None else ""))
+    if obs.get("kind") == "ask":      # AI 분석가에서 저장한 문제: 질문·근거 사실·AI 설명을 그대로 보여 준다
+        st.markdown(f"질문: **{obs.get('question', '')}**")
+        for f in obs.get("facts", []):
+            st.markdown(f"- {f}")
+        if obs.get("answer"):
+            with st.expander("AI 분석가의 설명"):
+                st.markdown(obs["answer"])
+        st.caption(f"문제라고 본 이유: {obs.get('definition', '–')}")
+    else:
+        st.caption(f"정의: {obs.get('definition', '–')} · 표본 n={obs.get('n_current', '–')}"
+                   + (f" · p={obs['p_value']:.3f}" if obs.get("p_value") is not None else ""))
 
 # ---------------- AI 초안 ----------------
 AKEY = llm.api_key()
