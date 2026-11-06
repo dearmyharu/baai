@@ -37,9 +37,18 @@ def _load_streamlit_secrets():
         pass
 
 
+_PLACEHOLDERS = ("xxxx", "프로젝트ID", "비밀번호", "붙여넣기", "your-", "<")
+
+
+def _real(v: str | None) -> str:
+    """예시 문구(secrets.toml.example 등)를 그대로 둔 값은 없는 것으로 본다."""
+    v = (v or "").strip()
+    return "" if any(p.lower() in v.lower() for p in _PLACEHOLDERS) else v
+
+
 def has_db_config() -> bool:
     load_env()
-    return bool(os.getenv("DATABASE_URL") or (os.getenv("DB_HOST") and os.getenv("DB_USER")))
+    return bool(_real(os.getenv("DATABASE_URL")) or (_real(os.getenv("DB_HOST")) and _real(os.getenv("DB_USER"))))
 
 
 @lru_cache(maxsize=1)
@@ -54,7 +63,7 @@ def get_engine():
             url = "postgresql+psycopg2://" + url[len("postgresql://"):]
         kwargs = {}
         if url.startswith("postgresql"):
-            kwargs["connect_args"] = {"sslmode": os.getenv("DB_SSLMODE", "require")}
+            kwargs["connect_args"] = {"sslmode": os.getenv("DB_SSLMODE", "require"), "connect_timeout": 10}
         return create_engine(url, pool_pre_ping=True, **kwargs)
     from sqlalchemy.engine import URL
     url = URL.create(
@@ -63,4 +72,4 @@ def get_engine():
         host=os.getenv("DB_HOST"), port=int(os.getenv("DB_PORT", "5432")),
         database=os.getenv("DB_NAME", "postgres"),
     )
-    return create_engine(url, connect_args={"sslmode": os.getenv("DB_SSLMODE", "require")}, pool_pre_ping=True)
+    return create_engine(url, connect_args={"sslmode": os.getenv("DB_SSLMODE", "require"), "connect_timeout": 10}, pool_pre_ping=True)

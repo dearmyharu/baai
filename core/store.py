@@ -60,13 +60,30 @@ def current_author() -> str:
 # ---------------------------------------------------------------------------
 # 백엔드
 # ---------------------------------------------------------------------------
+_db_error: str | None = None     # DB 접속 정보는 있는데 연결에 실패한 이유 (이 경우 PC 파일로 저장)
+
+
 def backend() -> str:
+    global _db_error
     from .db import has_db_config, load_env
     load_env()
     forced = os.getenv("GROWTH_LAB_BACKEND", "").lower()
-    if forced in ("json", "db"):
-        return forced
-    return "db" if has_db_config() else "json"
+    if forced == "json":
+        return "json"
+    if forced != "db" and not has_db_config():
+        return "json"
+    if _db_error is None and not _table_ready:
+        try:                      # 처음 한 번만 연결을 확인한다. 실패하면 화면을 멈추지 않고 PC 파일로 저장
+            _engine()
+        except Exception as e:
+            _db_error = f"{type(e).__name__}: {str(e).splitlines()[0][:200]}"
+    return "json" if _db_error else "db"
+
+
+def db_error() -> str | None:
+    """DB 연결 실패로 PC 파일에 저장 중이면 그 이유."""
+    backend()
+    return _db_error
 
 
 _table_ready = False
