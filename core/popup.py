@@ -9,6 +9,8 @@
 """
 from __future__ import annotations
 
+import html
+
 import altair as alt
 import pandas as pd
 import streamlit as st
@@ -18,7 +20,21 @@ from . import ui
 from .data import PERIOD_END, PERIOD_START
 
 FUNNEL_TOOLS = {"get_funnel", "design_experiment"}
-OVERLAY_MAX_DAYS = 62          # 이 일수 이하면 분석·비교 기간 일별 추이를 겹쳐 그린다
+OVERLAY_MAX_DAYS = 62
+CARD_CSS = """
+<style>
+  /* 일반 화면과 구분되게: 띄운 카드 + 'AI 분석가' 표시 (채팅 패널과 같은 초록 계열) */
+  .st-key-qdash {background: #FFFFFF; border: 2px solid #1F6F5C; border-radius: 16px;
+                 box-shadow: 0 10px 30px rgba(15, 50, 40, .18), 0 2px 6px rgba(15, 50, 40, .08);
+                 padding: 1.1rem 1.4rem 1.2rem; margin-top: .4rem;}
+  .qdash-badge {display: inline-flex; align-items: center; gap: .35rem; background: #1F6F5C; color: #fff;
+                font-size: .82rem; font-weight: 600; padding: .28rem .7rem; border-radius: 999px;}
+  .qdash-badge::before {content: "✦";}
+  .qdash-q {font-size: 1.25rem; font-weight: 700; color: #111827; margin: .35rem 0 .1rem;}
+  /* 뒤 배경을 살짝 어둡게: 팝업처럼 보이게 (채팅 패널은 그대로) */
+  section.main, [data-testid="stMain"] {background: #EEF2F0;}
+</style>
+"""          # 이 일수 이하면 분석·비교 기간 일별 추이를 겹쳐 그린다
 
 
 # ---------------------------------------------------------------------------
@@ -207,12 +223,18 @@ def render(m, spec: dict, question: str, key: str):
     if prev_l == cur_l:
         cur_l, prev_l = f"분석 {cur_l}", f"비교 {prev_l}"
 
-    h1, h2 = st.columns([5, 1], vertical_alignment="center")
-    h1.title("질문 대시보드")
+    st.markdown(CARD_CSS, unsafe_allow_html=True)
+    with st.container(key="qdash"):
+        _body(m, spec, question, key, cur, prev, f, cur_l, prev_l)
+
+
+def _body(m, spec, question, key, cur, prev, f, cur_l, prev_l):
+    h1, h2 = st.columns([6, 1], vertical_alignment="center")
+    h1.markdown('<span class="qdash-badge">AI 분석가가 띄운 대시보드</span>', unsafe_allow_html=True)
     h2.button("닫기", icon=":material/close:", key=f"close_{key}", on_click=close, use_container_width=True,
               help="원래 보던 화면으로 돌아갑니다. 답변 아래 '대시보드 다시 보기'로 다시 열 수 있어요.")
     m2, info = M.filter_mart(m, f, cur) if f else (m, {"label": ""})
-    st.markdown(f"**질문** · {question}")
+    st.markdown(f'<div class="qdash-q">“{html.escape(question)}”</div>', unsafe_allow_html=True)
     st.caption(f"분석 기간 {ui.period_label(cur)} · 비교 기간 {ui.period_label(prev)}"
                + (f" · 대상 {info['label']}" if info["label"] else ""))
 
