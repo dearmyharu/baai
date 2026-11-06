@@ -16,6 +16,7 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 def load_env():
+    _load_streamlit_secrets()          # 배포(Streamlit Cloud) Secrets 를 먼저 반영
     try:
         from dotenv import load_dotenv
     except ImportError:
@@ -23,7 +24,6 @@ def load_env():
     for p in (ROOT / "dashboard" / ".env", ROOT / "dashboard_test" / ".env"):
         if p.exists():
             load_dotenv(p, override=False)
-    _load_streamlit_secrets()
 
 
 def _load_streamlit_secrets():
@@ -33,6 +33,13 @@ def _load_streamlit_secrets():
         for k, v in st.secrets.items():
             if isinstance(v, (str, int, float)) and k not in os.environ:
                 os.environ[k] = str(v)
+            elif hasattr(v, "items"):          # [db] 처럼 묶어서 넣은 경우도 받아 준다
+                for k2, v2 in v.items():
+                    key = k2.upper() if k2.upper().startswith("DB_") else f"DB_{k2.upper()}"
+                    if k2.upper() in ("DATA_BACKEND", "DATABASE_URL"):
+                        key = k2.upper()
+                    if isinstance(v2, (str, int, float)) and key not in os.environ:
+                        os.environ[key] = str(v2)
     except Exception:
         pass
 
