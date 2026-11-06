@@ -804,6 +804,20 @@ def rising_products(m: dict, cur: tuple, prev: tuple, n: int = 5, min_prev_order
     return df.sort_values("매출 증가율", ascending=False).head(n).reset_index()
 
 
+def item_changes(m: dict, cur: tuple, prev: tuple, target: str = "product", metric: str = "매출") -> pd.DataFrame:
+    """두 기간의 같은 상품(또는 카테고리)을 맞대어 본 상품매출(쿠폰 후, 배송비 제외)·판매 수량 변화.
+    두 기간 중 한 번이라도 완료 주문이 있는 항목. 반환 열: (product_name, category | category), 이전, 현재, 변화, 변화율
+    변화율은 이전 값이 0이면 NaN."""
+    key = ["product_name", "category"] if target == "product" else ["category"]
+    val = "quantity" if metric == "수량" else "net_sales"
+    a = completed_items(m, *cur).groupby(key)[val].sum()
+    b = completed_items(m, *prev).groupby(key)[val].sum()
+    df = pd.concat({"이전": b, "현재": a}, axis=1).fillna(0)
+    df["변화"] = df["현재"] - df["이전"]
+    df["변화율"] = df["변화"] / df["이전"].replace(0, np.nan)
+    return df.reset_index()
+
+
 # ---------------------------------------------------------------------------
 # 고객 조건 필터 (AI 분석가의 조합 질문: "여성 30대 6월 VIP 고객의 TOP5" 등)
 # 정의 (결정 2026-11-03)

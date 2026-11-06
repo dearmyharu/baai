@@ -147,6 +147,42 @@ def explain_revenue_change(m, start, end):
                    None, ["원인은 이 분해만으로 확정할 수 없음. 함께 달라진 지표는 '확인할 후보'"])
 
 
+def compare_items(m, start, end, target="product", direction="down", n=5, metric="매출"):
+    cur, prev, plabel = _with_prev(start, end)
+    if prev is None:
+        raise ValueError("비교할 직전 기간이 데이터 범위(4/1~) 밖입니다.")
+    qty = metric == "수량"
+    df = M.item_changes(m, cur, prev, target=target, metric=metric)
+    what = "상품" if target == "product" else "카테고리"
+    obj = "상품을" if target == "product" else "카테고리를"
+    unit = "판매 수량" if qty else "상품매출"
+    fmt = (lambda v: f"{v:,.0f}개") if qty else won
+    down = direction != "up"
+    sel = (df[df["변화"] < 0].sort_values("변화") if down else df[df["변화"] > 0].sort_values("변화", ascending=False)).head(int(n))
+    name = (lambda r: f"{r.product_name} ({r.category})") if target == "product" else (lambda r: r.category)
+    facts = [f"비교: {_label(prev)} → {_label(cur)}, 같은 {obj} 두 기간에 맞대어 {unit} 비교",
+             f"{unit}이 줄어든 {what} {int((df['변화'] < 0).sum()):,}개, 늘어난 {what} {int((df['변화'] > 0).sum()):,}개 "
+             f"(두 기간 중 한 번이라도 팔린 {len(df):,}개 중)"]
+    for i, r in enumerate(sel.itertuples()):
+        rate = "" if pd.isna(r.변화율) else f", {r.변화율 * 100:+.1f}%"
+        facts.append(f"{i+1}위 {name(r)}: {fmt(r.이전)} → {fmt(r.현재)} ({'+' if r.변화 > 0 else ''}{fmt(r.변화)}{rate})")
+    if sel.empty:
+        facts.append(f"{unit}이 {'줄어든' if down else '늘어난'} {what}이 없습니다.")
+    label_col = "product_name" if target == "product" else "category"
+    amt = f"{unit} {'감소' if down else '증가'}" + ("량" if qty else "액")
+    chart_df = sel.assign(**{amt: sel["변화"].abs()}).rename(columns={label_col: what})
+    chart = {"kind": "bar", "data": chart_df, "x": amt, "y": what, "x_fmt": "," if qty else "~s"} if len(sel) else None
+    cols = (["product_name", "category"] if target == "product" else ["category"])
+    table = sel[cols + ["이전", "현재", "변화", "변화율"]].rename(columns={
+        "product_name": "상품", "category": "카테고리", "이전": f"비교 기간 {unit}", "현재": f"분석 기간 {unit}"})
+    notes = [f"각 기간의 TOP 목록끼리 비교한 것이 아니라 같은 {what}의 두 기간 값을 맞대어 본 변화",
+             f"{'감소' if down else '증가'}{'량' if qty else '액'}이 큰 순. 비교 기간에 안 팔린 {what}은 변화율 없음"]
+    if not qty:
+        notes.append("상품매출 = 완료 주문의 쿠폰 차감 후 상품금액(배송비 제외)")
+    title = f"{unit}이 {'줄어든' if down else '늘어난'} {what} TOP {int(n)}"
+    return _result(title, plabel, facts, chart, table, notes)
+
+
 def get_trend(m, start, end, grain="month"):
     cur = _period(start, end)
     t = M.sales_trend(m, *cur, grain=grain)
@@ -374,7 +410,7 @@ def with_filters(name: str, fn: Callable) -> Callable:
     return run
 
 
-FILTERABLE = {"get_kpis", "get_coupon_efficiency", "rank_items", "explain_revenue_change", "get_trend", "get_funnel",
+FILTERABLE = {"get_kpis", "get_coupon_efficiency", "rank_items", "compare_items", "explain_revenue_change", "get_trend", "get_funnel",
               "segment_preference", "segment_repeat", "get_segments"}
 
 _TOOL_LIST = [
@@ -385,6 +421,12 @@ _TOOL_LIST = [
          PERIOD, get_coupon_efficiency, [8]),
     Tool("rank_items", "상품 또는 카테고리 상품매출 순위·비중. 기간 언급이 없으면 이번 달(9월). 상품은 판매 수량(metric=수량) 순위도 가능",
          PERIOD | {"target": "product | category", "n": "개수", "metric": "매출 | 수량"}, rank_items, [3, 4]),
+    Tool("compare_items", "두 기간 사이에 상품(또는 카테고리)별 상품매출·판매 수량이 얼마나 줄었는지/늘었는지. 같은 상품을 두 기간에 "
+         "맞대어 '얼마 → 얼마'로 보여 주고 감소액(direction=down) 또는 증가액(direction=up)이 큰 순으로 정렬. "
+         "'매출이 빠진/줄어든/떨어진 상품', '많이 늘어난 상품', '덜 팔린 카테고리' 질문. 보고 싶은 기간만 넘기면 "
+         "직전 기간(달이면 전달, 달력 주면 그 전 주)과 자동 비교",
+         PERIOD | {"target": "product | category", "direction": "down | up", "n": "개수", "metric": "매출 | 수량"},
+         compare_items, []),
     Tool("explain_revenue_change", "직전 기간 대비 완료 매출 변화를 주문 수 효과와 객단가 효과로 분해하고 함께 달라진 지표 제시",
          PERIOD, explain_revenue_change, [10, 20]),
     Tool("get_trend", "완료 매출·주문 수 추이. 기간 언급이 없으면 전체 기간(start=2026-04-01, end=2026-10-01)", PERIOD | {"grain": "date | week | month"}, get_trend, [11]),
@@ -447,4 +489,5 @@ EXAMPLES = [
     ("지금 매출은 낮은데 키우면 될 상품은?", "find_potential_products", dict(start=SEP[0], end=SEP[1])),
     ("쿠폰 할인해 준 만큼 매출이 나왔어?", "get_coupon_efficiency", dict(start=SEP[0], end=SEP[1])),
     ("안 돌아오는 고객이 얼마나 돼?", "get_segments", dict(start=SEP[0], end=SEP[1])),
+    ("지난주에 2주 전보다 매출이 빠진 상품 보여줘", "compare_items", dict(start="2026-09-21", end="2026-09-28")),
 ]

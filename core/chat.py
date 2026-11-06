@@ -70,17 +70,26 @@ def draw_chart(c: dict):
     st.altair_chart(ch.properties(height=h), width="stretch")
 
 
-def show_result(res: dict):
-    st.markdown(f"**{res['title']}** · 기준 기간 {res['period']}")
+WARN_WORDS = ("표본 부족", "조건에 맞는 고객이 없음")
+
+
+def show_result(res: dict, folded: bool = False):
+    """도구 결과(사실·차트·표·주의). folded=True면 '분석 근거 보기' 안에 접는다(답변 글이 있을 때).
+    표본 부족 같은 경고는 접지 않고 항상 보인다."""
     for f in res["facts"]:
-        st.markdown(f"- {f}")
-    if res.get("chart") is not None:
-        draw_chart(res["chart"])
-    if res.get("table") is not None:
-        with st.expander("표로 보기"):
+        if any(w in f for w in WARN_WORDS):
+            st.warning(f, icon=":material/warning:")
+    box = st.expander(f"분석 근거 보기 · {res['title']}") if folded else st.container()
+    with box:
+        st.markdown(f"**{res['title']}** · 기준 기간 {res['period']}")
+        for f in res["facts"]:
+            st.markdown(f"- {f}")
+        if res.get("chart") is not None:
+            draw_chart(res["chart"])
+        if res.get("table") is not None:
             st.dataframe(res["table"], hide_index=True, width="stretch")
-    for n in res.get("notes", []):
-        ui.note(n)
+        for n in res.get("notes", []):
+            ui.note(n)
 
 
 
@@ -202,7 +211,7 @@ def render(m):
                                    "AI가 직접 계산했거나 잘못 옮겼을 수 있으니 아래 분석 결과로 확인해 주세요.",
                                    icon=":material/warning:")
                     for j, res in enumerate(e.get("results", [])):
-                        show_result(res)
+                        show_result(res, folded=bool(e.get("a")))
                         save_to_lab(e, res, key=f"lab_{i}_{j}")
                     if popup.spec_from_calls(e.get("calls")):
                         if st.session_state.get("active_dash") == i:
