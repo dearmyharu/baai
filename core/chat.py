@@ -156,7 +156,7 @@ def save_to_lab(e: dict, res: dict, key: str):
 
 def open_simulation(payload):
     """Explicitly import a scenario together with its period, scope and costs."""
-    title = "AI 정책 비교 · " + payload["scenarios"][0]["policy"]
+    title = "AI 정책 비교 · " + tools.S.POLICIES[payload["scenarios"][0]["policy"]]
     pid = store.add_problem({"kind": "simulation", "title": title, "facts": payload["facts"]},
         "AI 분석가", {"period": payload["start"] + " ~ " + payload["end"]}, simulation=payload)
     st.session_state.growth_open_id = pid
@@ -178,6 +178,12 @@ def _run_direct(m, tool: str, params: dict) -> dict:
 
 def _answer(m, key, log: list, question: str, tool: str | None = None, params: dict | None = None):
     entry = {"q": question}
+    if (st.session_state.get("growth_active") and not st.session_state.get("growth_context")
+            and any(word in question.replace(" ", "") for word in
+                    ("이결과", "지금결과", "현재비교", "왜이익", "내가고른", "선택한상품"))):
+        entry["a"] = "현재 변경안은 아직 계산하지 않았습니다. 변경값과 주문 수 가정을 확인하고 ‘결과 확인’을 누른 뒤 물어봐 주세요."
+        log.append(entry)
+        return
     if key:
         history = [{"q": e["q"], "a": e.get("a", "")} for e in log]
         try:
@@ -284,8 +290,9 @@ def render(m):
                             st.button(nq, key=f"next_{i}_{j}", icon=":material/subdirectory_arrow_right:",
                                       on_click=ask_next, args=(nq,), use_container_width=True)
                     if e.get("tools") and e.get("model"):
-                        st.caption(f"사용한 분석: {' · '.join(e['tools'])} · 모델 {e['model']}"
-                                   + (f" · {e['usage']}" if e.get("usage") else ""))
+                        with st.expander("개발용 분석 정보"):
+                            st.caption(f"사용한 분석: {' · '.join(e['tools'])} · 모델 {e['model']}"
+                                       + (f" · {e['usage']}" if e.get("usage") else ""))
 
         q = st.chat_input("무엇이든 물어보세요", key="chat_q") or st.session_state.pop("pending_q", None)
         if q:

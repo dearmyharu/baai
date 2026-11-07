@@ -8,7 +8,7 @@ import pandas as pd
 
 from . import metrics as M
 
-VERSION = 1
+VERSION = 2
 POLICIES = {
     "price": "판매가격 변경", "discount": "주문 쿠폰 변경", "shipping": "배송 정책",
     "benefit": "고객 추가 혜택", "bundle": "묶음 할인", "volume": "노출·전환 개선",
@@ -208,6 +208,11 @@ def simulate(prepared, config=None):
     outside = _totals(base[unchanged], pd.Series(1.0, index=base.index[unchanged]), costs)
     target_base = _totals(base[target], pd.Series(1.0, index=base.index[target]), costs)
     target_changed = _totals(rows[target], weights[target], costs, benefit[target])
+    # Keep A/B on the same selected-basket scope even if only a subset qualifies
+    # for a bundle. Other selected baskets remain unchanged within that scope.
+    scope_target = base["target"]
+    scope_baseline = _totals(base[scope_target], pd.Series(1.0, index=base.index[scope_target]), costs)
+    scope_changed = _totals(rows[scope_target], weights[scope_target], costs, benefit[scope_target], c["fixed_cost"])
     replay = _totals(rows[target], pd.Series(1.0, index=rows.index[target]), costs, benefit[target])
     unit_profit = replay["profit"] / int(target.sum())
     required = None
@@ -217,6 +222,7 @@ def simulate(prepared, config=None):
     table = pd.DataFrame([{"지표": label, "현재": baseline[key], "변경안": changed[key],
                            "차이": changed[key] - baseline[key]} for key, label in LABELS.items()])
     return {"version": VERSION, "config": c, "baseline": baseline, "changed": changed,
+            "scope_baseline": scope_baseline, "scope_changed": scope_changed,
             "target_baseline": target_base, "target_changed": target_changed, "outside": outside,
             "target_orders": int(target.sum()), "target_buyers": int(base.loc[target, "customer_id"].nunique()),
             "unit_profit": unit_profit, "required_order_change": required, "notes": notes, "table": table}
@@ -229,12 +235,58 @@ def sensitivity(prepared, config):
                          for r in rates])
 
 
+def comparison(result, whole_shop=False):
+    """Target baskets by default; campaign cost is charged exactly once."""
+    if whole_shop:
+        before, after = result["baseline"], result["changed"]
+    else:
+        before, after = result["scope_baseline"], result["scope_changed"]
+    return pd.DataFrame([
+        {"지표": label, "현재": before[k], "변경안": after[k], "차이": after[k] - before[k]}
+        for k, label in LABELS.items()
+    ])
+
+
+def assumption_text(config):
+    change = normalize_config(config)["order_change_pct"]
+    reaction = "그대로 유지" if change == 0 else f"{abs(change):g}% {'증가' if change > 0 else '감소'}"
+    return f"주문 수가 {reaction}한다고 가정한 계산입니다. 실제 판매량 증가를 예측한 결과가 아닙니다."
+
+
+def input_facts(config, costs=None):
+    """Only validated inputs actually used by this policy, with their units."""
+    c = normalize_config(config)
+    fields = {
+        "price": [("price_change_pct", "가격 변화율", "%")],
+        "discount": [("discount_value", "변경 할인", "%" if c["discount_type"] == "rate" else "원"),
+                     ("minimum_order", "최소 주문금액", "원"), ("discount_cap", "최대 할인액", "원"),
+                     ("adoption_pct", "쿠폰 적용 주문 비중", "%")],
+        "shipping": [("shipping_fee", "고객 배송비", "원"), ("free_shipping_threshold", "무료배송 기준", "원")],
+        "benefit": [("benefit_amount", "추가 혜택 원가", "원"), ("adoption_pct", "혜택 사용 비중", "%")],
+        "bundle": [("bundle_discount_pct", "묶음 할인율", "%")], "volume": [],
+    }[c["policy"]]
+    fields = fields + [("order_change_pct", "주문 수 변화 가정", "%"), ("fixed_cost", "추가 실행비", "원")]
+    facts = [f"사용자 입력 · {label} {c[key]:g}{unit}" for key, label, unit in fields]
+    if c["policy"] == "price":
+        facts += [f"사용자 입력 · 상품 {pid} 변경 가격 {value:g}원" for pid, value in c["price_overrides"].items()]
+    for key, label, unit in [("shipping_per_order", "배송 원가", "원"), ("fee_pct", "결제 수수료율", "%"),
+                             ("other_per_order", "기타 주문당 비용", "원")]:
+        if costs is not None:
+            facts.append(f"사용자 입력 · {label} {costs[key]:g}{unit}")
+    return facts
+
+
 def evidence(prepared, result):
     """Exact numeric evidence for AI explanations and exports."""
     facts = [f"정책 {POLICIES[result['config']['policy']]} · 관측 대상 {result['target_orders']:,}주문, {result['target_buyers']:,}고객",
+             f"결과 범위: 선택 상품이 포함된 {int(result['scope_baseline']['orders']):,}주문 전체입니다. 함께 구매한 상품과 배송비를 포함합니다.",
+             assumption_text(result['config']),
              f"사용자 가정: 대상 주문 수 {result['config']['order_change_pct']:+g}% 변화"]
-    facts += [f"{LABELS[k]}: 현재 {result['baseline'][k]:,.0f}원 → 변경 {result['changed'][k]:,.0f}원, 차이 {result['changed'][k] - result['baseline'][k]:+,.0f}원"
-              for k in ("revenue", "net_sales", "discount", "product_cost", "profit")]
+    facts.extend(input_facts(result['config'], prepared['costs']))
+    facts += [f"대상 주문 {r['지표']}: 현재 {r['현재']:,.0f}원 → 변경 {r['변경안']:,.0f}원, 차이 {r['차이']:+,.0f}원"
+              for r in comparison(result).to_dict('records') if r['지표'] in
+              [LABELS[k] for k in ('revenue', 'net_sales', 'discount', 'product_cost', 'profit')]]
+    facts.append(f"선택 범위 주문 수: 현재 {result['scope_baseline']['orders']:g}건 → 변경 {result['scope_changed']['orders']:g}건")
     req = result["required_order_change"]
     facts.append(f"기존 이익 유지에 필요한 대상 주문 변화 {req * 100:+.2f}%" if req is not None
                  else "주문당 반영 비용 차감 이익이 0 이하이므로 주문 확대를 통한 손익 유지 조건을 계산하지 않습니다.")

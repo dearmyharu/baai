@@ -56,6 +56,10 @@ SYSTEM = """너는 식품 이커머스 회사의 'AI 분석가'다. 데이터 �
 - 정책 변경의 예상 손익·할인·가격·배송 조건 비교 → simulate_policy. 관측 사실·정책 재계산·사용자 가정을 구분한다.
   주문 반응은 사용자가 말하지 않으면 0%로 두고 밝힌다. 변경 정책값이 없으면 먼저 물어본다.
   정책 후보와 검토 이유는 제안할 수 있으나 증가율을 임의로 확정하지 않는다. 기존 매출 조회는 기존 도구를 쓴다.
+  '얼마나 더 팔려?'에는 판매량 증가를 아직 알 수 없다고 먼저 답한다. 주문 변화 0%는 수요 예측이 아니다.
+  '할인해도 더 팔리지 않는다', '주문이 늘지 않는 것으로 나왔다'처럼 입력 가정을 고객 반응으로 단정하지 않는다.
+  결과는 선택 상품을 포함한 적용 대상 주문 전체(동반구매 포함)의 손익이다. 쇼핑몰 전체 수치와 혼동하지 않는다.
+  추천 후속 질문은 '얼마나 늘어야 이익이 유지돼?'처럼 사용자가 묻는 문장으로 쓴다. '알려드릴까요?'는 쓰지 않는다.
 
 [고객 조건]
 - "여성 30대", "서울 고객", "VIP", "카카오로 가입한", "신규 가입", "첫 구매"처럼 대상 고객 조건이 있으면 filters에 넣는다. 없으면 filters를 넣지 않는다.
@@ -639,10 +643,23 @@ def ask(key: str, question: str, run_tool: Callable[[str, dict], dict], history:
                    "설명 요청은 selected와 scenarios에서 선택안을 찾아 simulate_policy를 호출한다. "
                    "기간·대상·비용을 그대로 전달하고 사용자가 바꾸라고 한 값만 변경한다. "
                    "관측값과 가정 기반 결과를 구분한다. 가설 3개·ICE·실험안을 강제하지 않는다. "
-                   "입력하지 않은 반응률을 만들지 않는다.\n" + json.dumps(growth_context, ensure_ascii=False, default=str))
+                   "입력하지 않은 반응률을 만들지 않는다. 결과의 범위는 선택 상품 포함 주문 전체다. "
+                   "판매량 증가는 예측하지 않으며, 주문 수 가정을 결론 앞부분에 명시한다.\n" + json.dumps(growth_context, ensure_ascii=False, default=str))
     r = _tool_loop(key, system, contents, run_tool, model or pick_model(key), answer_schema=ANSWER_SCHEMA)
     a = parse_answer(r["text"])
     if a:
+        simulations = [c["result"]["simulation"] for c in r.get("calls", [])
+                       if c.get("result", {}).get("simulation")]
+        if simulations:
+            payload = simulations[-1]
+            config = payload["scenarios"][0]
+            a["notice"] = T.S.assumption_text(config) + " " + a.get("notice", "")
+            # The model must not turn a supplied reaction assumption into a demand forecast.
+            asks_demand = re.search(r"얼마나.*(?:팔|늘)|더\s*팔|판매량.*예측|주문.*예측", question)
+            asks_threshold = re.search(r"손익|유지|늘어야|늘려야", question)
+            if asks_demand and not asks_threshold:
+                a["conclusion"] = "실제 판매량이 얼마나 늘어날지는 아직 알 수 없습니다."
+                a["hypothesis"] = ""
         r["answer"], r["text"] = a, compose_answer(a)
     return r
 

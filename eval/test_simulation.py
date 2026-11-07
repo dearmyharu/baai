@@ -139,6 +139,48 @@ class SimulationTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             tools.run(self.m, 'simulate_policy', start=str(START.date()), end=str(END.date()), policy_config={'policy': 'discount'})
 
+    def test_target_comparison_fixed_cost_and_shop_reconciliation(self):
+        prepared = S.prepare(self.m, START, END, {'product_ids': ['P2']})
+        r = S.simulate(prepared, {'policy': 'price', 'price_overrides': {'P2': 10000}, 'fixed_cost': 1000})
+        target = S.comparison(r).set_index('지표')
+        shop = S.comparison(r, whole_shop=True).set_index('지표')
+        self.assertEqual(target.loc['반영 비용 차감 이익', '변경안'], 12000)
+        self.assertEqual(shop.loc['반영 비용 차감 이익', '변경안'], 21000)
+        self.assertEqual(target.loc['반영 비용 차감 이익', '차이'], shop.loc['반영 비용 차감 이익', '차이'])
+
+    def test_bundle_and_price_compare_on_same_selected_scope(self):
+        # Only O2 has both products. O1 must still appear unchanged in the
+        # selected-scope comparison so A/B share the same baseline.
+        prepared = S.prepare(self.m, START, END, {'product_ids': ['P1', 'P2', 'P3']})
+        # Bundle of P2/P3, but add an existing selected basket lacking P3.
+        self.m['items'].loc[self.m['items'].product_id.eq('P1'), 'product_id'] = 'P2'
+        prepared = S.prepare(self.m, START, END, {'product_ids': ['P2', 'P3']})
+        a = S.simulate(prepared, {'policy': 'price', 'price_change_pct': 5})
+        b = S.simulate(prepared, {'policy': 'bundle', 'bundle_discount_pct': 10})
+        self.assertEqual(b['target_orders'], 1)
+        pd.testing.assert_series_equal(S.comparison(a)['현재'], S.comparison(b)['현재'])
+        self.assertEqual(b['scope_baseline']['orders'], 2)
+
+    def test_input_numbers_are_evidence_but_invented_numbers_are_rejected(self):
+        result = tools.simulate_policy(self.m, str(START.date()), str(END.date()),
+            {'policy': 'discount', 'discount_value': 10, 'minimum_order': 25000, 'discount_cap': 5000})
+        calls = [{'tool': 'simulate_policy', 'result': result}]
+        self.assertEqual(llm.unsupported_in_answer('10% 할인, 최소금액 25,000원, 최대 5,000원', calls), [])
+        self.assertIn('77%', llm.unsupported_in_answer('주문은 77% 늘어납니다.', calls))
+
+    def test_ai_demand_question_cannot_present_assumption_as_prediction(self):
+        result = tools.simulate_policy(self.m, str(START.date()), str(END.date()),
+            {'policy': 'discount', 'discount_value': 10})
+        answer = {'conclusion': '10% 할인해도 더 팔리지 않는 것으로 나왔습니다.',
+                  'evidence': [], 'hypothesis': '할인 효과가 없습니다.', 'notice': '', 'next_questions': []}
+        raw = dict(text=json.dumps(answer, ensure_ascii=False),
+                   calls=[{'tool': 'simulate_policy', 'result': result}], model='test', usage={})
+        with patch.object(llm, '_tool_loop', return_value=raw):
+            reply = llm.ask('test-key', '10% 할인하면 얼마나 더 팔려?', lambda *a: {}, model='test')
+        self.assertEqual(reply['answer']['conclusion'], '실제 판매량이 얼마나 늘어날지는 아직 알 수 없습니다.')
+        self.assertEqual(reply['answer']['hypothesis'], '')
+        self.assertIn('주문 수가 그대로 유지', reply['answer']['notice'])
+
     def test_grade_filter_with_noncontiguous_index(self):
         frame = self.m['sessions'].copy()
         frame.index = [41, 93]
@@ -158,7 +200,7 @@ class SimulationTests(unittest.TestCase):
         with patch.object(llm_openai, '_chat_any', side_effect=[(first, 'test'), (last, 'test')]):
             result = llm.ask('sk-test', '쿠폰을 35%로 바꾸면?', lambda name, p: tools.run(self.m, name, **p), model='test')
         self.assertEqual(result['calls'][0]['result']['simulation']['scenarios'][0]['discount_value'], 35)
-        self.assertEqual(result['calls'][0]['result']['table'].iloc[-1]['변경안'], 22500)
+        self.assertEqual(result['calls'][0]['result']['table'].iloc[-1]['변경안'], 7500)
 
     def test_no_mutation_and_sensitivity(self):
         old = copy.deepcopy(self.m)
@@ -199,29 +241,43 @@ class GrowthUiTests(unittest.TestCase):
     def assert_clean(self):
         self.assertFalse(list(self.at.exception), [e.message for e in self.at.exception])
 
+    def calculate(self):
+        next(b for b in self.at.button if b.label == '결과 확인').click().run()
+        self.assert_clean()
+
     def test_direct_entry_and_all_policy_controls(self):
         self.assert_clean()
+        self.assertNotIn('growth_context', self.at.session_state)
+        self.assertFalse(any(m.label == '입력한 비용 차감 후 이익' for m in self.at.metric))
         for policy in S.POLICIES:
             if policy == 'bundle':
                 self.at.multiselect(key='sim_new_products').set_value(['P2', 'P3']).run()
             self.at.selectbox(key='sim_new_a_policy').set_value(policy).run()
             self.assert_clean()
-            self.assertGreaterEqual(len(self.at.metric), 7)
+            self.assertNotIn('growth_context', self.at.session_state)
+            self.calculate()
+            self.assertEqual(self.at.session_state.growth_context['scenarios'][0]['policy'], policy)
+            self.assertTrue(any('실제 판매량 증가를 예측한 결과가 아닙니다' in i.value for i in self.at.info))
 
     def test_save_reload_and_old_record_compatibility(self):
-        self.at.number_input(key='sim_new_a_order_change_pct').set_value(10).run()
-        save = next(b for b in self.at.button if b.label == '비교안과 판단 저장')
-        save.click().run()
+        self.at.number_input(key='sim_new_a_price_order_change_pct').set_value(10).run()
+        self.calculate()
+        next(b for b in self.at.button if b.label == '비교안과 판단 저장').click().run()
         self.assert_clean()
         record = store.load()['problems'][0]
         self.assertEqual(record['simulation']['scenarios'][0]['order_change_pct'], 10)
-        self.assertGreaterEqual(len(self.at.metric), 7)
+        self.assertIn('growth_context', self.at.session_state)
         store.update_problem(record['id'], hypotheses=[{'가설': '이전 가설'}], experiment={'name': '기존 실험'})
         self.at.run()
         self.assert_clean()
         self.assertEqual(store.get_problem(record['id'])['experiment']['name'], '기존 실험')
         next(b for b in self.at.button if b.label == '저장 기간 적용').click().run()
         self.assert_clean()
+        # New-record saving is the default when reviewing an existing comparison.
+        next(b for b in self.at.button if b.label == '비교안과 판단 저장').click().run()
+        self.assert_clean()
+        self.assertEqual(len(store.load()['problems']), 2)
+        self.assertEqual(store.get_problem(record['id'])['experiment']['name'], '기존 실험')
 
     def test_ai_tool_imports_full_scope_and_period(self):
         from core import chat
@@ -233,22 +289,86 @@ class GrowthUiTests(unittest.TestCase):
         self.at.run()
         self.assert_clean()
         self.assertEqual(self.at.multiselect(key=f"sim_{self.at.session_state.sim_record}_products").value, ['P2'])
+        self.calculate()
         ctx = self.at.session_state.growth_context
         self.assertEqual(ctx['scenarios'][0]['policy'], 'shipping')
         self.assertEqual(ctx['costs']['shipping_per_order'], 2500)
+        self.assertEqual(len(ctx['scenarios']), 1)
 
     def test_category_selection_limits_products(self):
         self.at.multiselect(key='sim_new_products').set_value(['P2']).run()
         self.at.multiselect(key='sim_new_categories').set_value(['빵']).run()
         self.assert_clean()
         self.assertEqual(self.at.multiselect(key='sim_new_products').value, [])
-        self.assertNotIn('우유', self.at.multiselect(key='sim_new_products').options)
+        self.assertFalse(any('우유' in s for s in self.at.multiselect(key='sim_new_products').options))
 
-    def test_second_scenario_is_optional(self):
+    def test_second_scenario_and_stale_results(self):
+        self.calculate()
         self.assertEqual(len(self.at.session_state.growth_context['scenarios']), 1)
         self.at.toggle(key='sim_new_extra').set_value(True).run()
-        self.assert_clean()
+        self.assertNotIn('growth_context', self.at.session_state)
+        self.calculate()
         self.assertEqual(len(self.at.session_state.growth_context['scenarios']), 2)
+        self.at.number_input(key='sim_new_a_price_order_change_pct').set_value(10).run()
+        self.assertNotIn('growth_context', self.at.session_state)
+        self.assertFalse(any(m.label == '입력한 비용 차감 후 이익' for m in self.at.metric))
+
+    def test_single_product_input_and_target_basket_result(self):
+        self.at.multiselect(key='sim_new_products').set_value(['P2']).run()
+        price = next(n for n in self.at.number_input if n.label == '변경할 판매가격 (원)')
+        price.set_value(10000).run()
+        self.calculate()
+        ctx = self.at.session_state.growth_context
+        self.assertEqual(ctx['scenarios'][0]['price_overrides'], {'P2': 10000})
+        self.assertEqual(ctx['display_scope'], 'target_orders')
+        rows = {r['지표']: r for r in ctx['comparison']}
+        self.assertEqual(rows['완료 매출']['현재'], 23000)  # Milk basket includes cheese + shipping.
+        self.assertEqual(rows['완료 매출']['변경안 A'], 21000)
+        self.assertTrue(any('차감하지 않은 비용' in w.value for w in self.at.warning))
+        next(b for b in self.at.button if b.label == '새 비교 시작').click().run()
+        self.assert_clean()
+        self.assertEqual(self.at.multiselect(key='sim_new_products').value, [])
+        self.assertNotIn('growth_context', self.at.session_state)
+
+    def test_missing_sales_recovery_and_clear_coupon_units(self):
+        self.at.selectbox(key='period_month').set_value(4).run()  # August has no orders in fixture.
+        self.assert_clean()
+        self.assertTrue(any('판매 내역이 없습니다' in i.value for i in self.at.info))
+        self.at.selectbox(key='period_month').set_value(5).run()
+        self.at.selectbox(key='sim_new_a_policy').set_value('discount').run()
+        self.at.number_input(key='sim_new_a_discount_discount_value_rate').set_value(10).run()
+        self.calculate()
+        self.assertEqual(self.at.session_state.growth_context['scenarios'][0]['discount_value'], 10)
+        self.assertTrue(any('최소 주문금액' in n.label for n in self.at.number_input))
+        self.at.selectbox(key='sim_new_a_discount_discount_type').set_value('fixed').run()
+        self.at.number_input(key='sim_new_a_discount_discount_value_fixed').set_value(2000).run()
+        self.at.selectbox(key='sim_new_a_discount_discount_type').set_value('rate').run()
+        self.assert_clean()
+        self.assertLessEqual(self.at.number_input(key='sim_new_a_discount_discount_value_rate').value, 100)
+
+    def test_unsold_product_can_recover_without_leaving_page(self):
+        from core import ui
+        m = ui.get_mart()
+        m['raw']['product'] = pd.concat([m['raw']['product'], pd.DataFrame([
+            {'product_id': 'P4', 'product_name': '신상품', 'category': '음료', 'cost_price': 1000}])], ignore_index=True)
+        self.at.run()
+        self.at.multiselect(key='sim_new_products').set_value(['P4']).run()
+        self.assert_clean()
+        next(b for b in self.at.button if '주문 선택' in b.label).click().run()
+        self.assert_clean()
+        self.assertNotEqual(self.at.multiselect(key='sim_new_products').value, ['P4'])
+        self.calculate()
+
+    def test_draft_chat_never_uses_old_comparison(self):
+        from core import chat
+        self.calculate()
+        self.at.number_input(key='sim_new_a_price_order_change_pct').set_value(5).run()
+        self.at.session_state.growth_active = True
+        log = []
+        with patch.object(chat.st, 'session_state', self.at.session_state), patch.object(llm, 'ask') as ask:
+            chat._answer(mart(), 'test-key', log, '지금 결과를 설명해줘')
+        ask.assert_not_called()
+        self.assertIn('아직 계산하지 않았습니다', log[0]['a'])
 
     def test_ai_context_instructions_keep_actual_inputs(self):
         context = dict(start='2026-09-01', end='2026-10-01', selected='A',

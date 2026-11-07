@@ -49,6 +49,14 @@ if st.session_state.get("last_page") != page.title:
 if show_chat:
     from core import chat, popup, ui
     main, side = st.columns([7, 3], gap="medium")
+    if st.session_state.growth_active:
+        # Read this run's inputs before answering, so changed/draft inputs cannot
+        # accidentally reuse a previous policy comparison in the chat.
+        with main:
+            page.run()
+        with side:
+            chat.render(ui.get_mart())
+        st.stop()
     with side:                 # 패널을 먼저 그린다: 화면 코드가 st.stop()으로 일찍 끝나도 패널은 남는다
         chat.render(ui.get_mart())
     with main:

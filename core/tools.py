@@ -539,14 +539,17 @@ def simulate_policy(m, start, end, policy_config, simulation_scope=None, simulat
         raise ValueError("무료배송 기준 금액도 확인해 주세요.")
     prepared = S.prepare(m, *cur, simulation_scope, simulation_costs)
     result = S.simulate(prepared, policy_config)
+    target_table = S.comparison(result)
+    profit = target_table.set_index("지표").loc[S.LABELS["profit"]]
     out = _result("정책 시뮬레이션 · " + S.POLICIES[result["config"]["policy"]], _label(cur),
         S.evidence(prepared, result),
         {"kind": "bar", "data": pd.DataFrame({"조건": ["현재", "변경안"],
-         "반영 비용 차감 이익": [result["baseline"]["profit"], result["changed"]["profit"]]}),
-         "x": "반영 비용 차감 이익", "y": "조건", "x_fmt": ",.0f"}, result["table"], result["notes"])
+         "반영 비용 차감 이익": [profit["현재"], profit["변경안"]]}),
+         "x": "반영 비용 차감 이익", "y": "조건", "x_fmt": ",.0f"}, target_table, result["notes"])
     out["simulation"] = {"version": S.VERSION, "start": prepared["start"], "end": prepared["end"],
-        "scope": prepared["scope"], "costs": prepared["costs"], "scenarios": [result["config"], dict(S.DEFAULT_CONFIG)],
-        "selected": "A", "facts": out["facts"], "notes": out["notes"], "comparison": result["table"].to_dict("records")}
+        "scope": prepared["scope"], "costs": prepared["costs"], "scenarios": [result["config"]],
+        "selected": "A", "display_scope": "target_orders", "facts": out["facts"], "notes": out["notes"],
+        "comparison": target_table.to_dict("records")}
     return out
 
 
