@@ -11,7 +11,6 @@ m = ui.get_mart()
 cur, prev = ui.period_controls()
 
 st.title("Growth Lab")
-st.caption("GitHub → Streamlit 자동 반영 테스트")
 st.caption("다른 화면에서 저장한 변화를 문제 → 가설 → 전략 → 실험 설계로 정리하는 작업 공간입니다. "
            + ("저장 위치: 공유 DB (팀원 모두에게 보입니다)" if store.backend() == "db"
               else "저장 위치: 이 PC의 dashboard/growth_lab/store.json (나만 보입니다)"))
