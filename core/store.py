@@ -185,14 +185,16 @@ def get_problem(pid: str) -> dict | None:
     return next((p for p in _read_all() if p["id"] == pid), None)
 
 
-def add_problem(candidate: dict, source_page: str, context: dict) -> str:
+def add_problem(candidate: dict, source_page: str, context: dict, simulation: dict | None = None,
+                status: str = "문제 후보") -> str:
     pid = "PB-" + uuid.uuid4().hex[:6].upper()
     who, now = current_author(), _now()
     _upsert({
         "id": pid, "created_at": now, "created_by": who, "updated_at": now, "updated_by": who,
-        "status": "문제 후보", "source_page": source_page,
+        "status": status, "source_page": source_page,
         "title": candidate.get("title", "제목 없음"), "observed": candidate, "context": context,
         "definition": {}, "hypotheses": [], "strategies": [], "experiment": {}, "notes": "",
+        **({"simulation": simulation} if simulation is not None else {}),
     })
     return pid
 

@@ -1,378 +1,232 @@
-"""⑤ Growth Lab: 어떤 문제를 해결하고, 어떻게 검증할 것인가?"""
-import math
+"""Growth Lab: policy scenarios with optional experiment planning."""
+from __future__ import annotations
 
+import json
+
+import altair as alt
 import pandas as pd
 import streamlit as st
 
-from core import llm, store, tools, ui
-from core.metrics import sample_size_per_group, two_prop_test
+from core import growth_experiment, metrics as M, simulation as S, store, ui
 
-m = ui.get_mart()
-cur, prev = ui.period_controls()
 
-st.title("Growth Lab")
-st.caption("다른 화면에서 저장한 변화를 문제 → 가설 → 전략 → 실험 설계로 정리하는 작업 공간입니다. "
-           + ("저장 위치: 공유 DB (팀원 모두에게 보입니다)" if store.backend() == "db"
-              else "저장 위치: 이 PC의 dashboard/growth_lab/store.json (나만 보입니다)"))
-if store.db_error():
-    st.warning("공유 DB에 연결하지 못해 이 PC 파일(growth_lab/store.json)에 저장하고 있습니다. 팀원에게는 보이지 않습니다. "
-               "DB 접속 정보(.env 또는 .streamlit/secrets.toml의 DB_HOST·DB_USER·DB_PASSWORD)를 확인하세요. "
-               f"원인: {store.db_error()}", icon=":material/cloud_off:")
-if store.current_author() == "익명":
-    st.info("왼쪽 사이드바 아래 '내 이름'을 적으면 누가 저장·수정했는지 함께 기록됩니다.", icon=":material/person:")
+def policy_inputs(config, prefix):
+    default = S.normalize_config(config)
+    cfg = dict(default)
+    cfg['policy'] = st.selectbox('정책', list(S.POLICIES), index=list(S.POLICIES).index(default['policy']),
+                                 format_func=S.POLICIES.get, key=f'{prefix}_policy')
 
-data = store.load()
-problems = data["problems"]
+    def number(key, label, low=0.0, high=1e8, help=None):
+        cfg[key] = st.number_input(label, float(low), float(high), min(float(high), float(default[key])),
+                                    key=f'{prefix}_{key}', help=help)
 
-# ---------------- 문제 목록 ----------------
-with st.expander("직접 문제 후보 추가", icon=":material/add:"):
-    with st.form("new_problem", clear_on_submit=True):
-        t = st.text_input("문제 제목", placeholder="예: 7월 야식 테마 장바구니 이탈 증가")
-        obs = st.text_area("관찰된 변화와 근거", placeholder="어떤 지표가 어느 기간에 얼마나 변했는지")
-        if st.form_submit_button("추가") and t:
-            store.add_problem({"kind": "manual", "title": t, "definition": obs, "unit": "rate"}, "직접 입력",
-                              {"page": "Growth Lab", "period": ui.period_label(cur), "compare": ui.period_label(prev)})
-            st.rerun()
-
-if not problems:
-    st.info("아직 저장된 문제 후보가 없습니다. AI 분석가 답변의 분석 결과, 통합 현황의 '확인할 변화', 상품·큐레이션의 '관심과 구매의 차이', "
-            "고객 여정의 '구간 자세히 보기', 리텐션의 'RFM 고객군'에서 **Growth Lab에 저장**을 눌러 가져오세요.")
-    st.page_link("views/overview.py", label="통합 현황으로 가기", icon=":material/arrow_forward:")
-    st.stop()
-
-lst = pd.DataFrame([{"ID": p["id"], "상태": p["status"], "문제": p["title"], "출처": p["source_page"],
-                     "분석 기간": p.get("context", {}).get("period", ""), "작성": p.get("created_by", ""),
-                     "최근 수정": f"{p.get('updated_at', p['created_at'])} {p.get('updated_by', '')}".strip()}
-                    for p in problems])
-st.dataframe(lst.iloc[::-1], hide_index=True, width="stretch")
-
-ids = [p["id"] for p in problems][::-1]
-titles = {p["id"]: p["title"] for p in problems}
-pid = st.selectbox("작업할 문제", ids, format_func=lambda i: f"{i} · {titles.get(i, '')}", key="gl_pid")
-P = store.get_problem(pid)
-if P is None:
-    st.warning("다른 팀원이 이 문제를 삭제했습니다.")
-    st.stop()
-obs = P.get("observed", {})
-unit = obs.get("unit", "rate")
-
-st.divider()
-h1, h2, h3 = st.columns([4, 2, 1])
-h1.subheader(P["title"])
-skey = f"st_{pid}_{P['status']}"     # 다른 곳에서 상태가 바뀌면 위젯도 새로 그려지도록 상태를 키에 포함
-h2.selectbox("상태", store.STATUSES, index=store.STATUSES.index(P["status"]), key=skey,
-             on_change=lambda: store.update_problem(pid, status=st.session_state[skey]))
-with h3:
-    st.write("")
-    if st.button("삭제", key=f"del_{pid}", icon=":material/delete:"):
-        store.delete_problem(pid)
-        st.rerun()
-
-with st.container(border=True):
-    ctx = P.get("context", {})
-    st.markdown(f"**관찰된 근거** · 출처: {P['source_page']} · 분석 {ctx.get('period', '–')} / 비교 {ctx.get('compare', '–')}")
-    if obs.get("current") is not None:
-        line = f"{obs.get('metric', '')}: "
-        if obs.get("previous") is not None:
-            line += f"{ui.fmt_value(obs['previous'], unit)} → "
-        line += f"**{ui.fmt_value(obs['current'], unit)}**"
-        if obs.get("previous") is not None:
-            line += f" ({ui.fmt_delta(obs['current'], obs['previous'], unit)})"
-        st.markdown(line + f" · 영향 범위: {obs.get('segment', '–')}")
-    if obs.get("kind") == "ask":      # AI 분석가에서 저장한 문제: 질문·근거 사실·AI 설명을 그대로 보여 준다
-        st.markdown(f"질문: **{obs.get('question', '')}**")
-        for f in obs.get("facts", []):
-            st.markdown(f"- {f}")
-        if obs.get("answer"):
-            with st.expander("AI 분석가의 설명"):
-                st.markdown(obs["answer"])
-        st.caption(f"문제라고 본 이유: {obs.get('definition', '–')}")
+    policy = cfg['policy']
+    if policy == 'price':
+        number('price_change_pct', '선택 상품 가격 변화 (%)', -100, 1000,
+               '관측된 쿠폰 차감 전 상품금액을 증감합니다. 0%는 현재 가격입니다.')
+    elif policy == 'discount':
+        cfg['discount_type'] = st.selectbox('새 쿠폰 방식', ['rate', 'fixed'],
+            index=['rate', 'fixed'].index(default['discount_type']),
+            format_func=lambda x: '정률 (%)' if x == 'rate' else '정액 (원)', key=f'{prefix}_discount_type')
+        number('discount_value', '새 할인율 (%)' if cfg['discount_type'] == 'rate' else '새 할인액 (원)',
+               high=100 if cfg['discount_type'] == 'rate' else 1e8)
+        number('minimum_order', '최소 주문 상품금액 (원)')
+        number('discount_cap', '최대 할인액 (원, 0은 상한 없음)')
+        number('adoption_pct', '새 쿠폰 적용 주문 비중 (%)', high=100,
+               help='대상 주문의 해당 비중에서 기존 주문 쿠폰을 새 쿠폰으로 교체합니다.')
+    elif policy == 'shipping':
+        number('shipping_fee', '고객 부담 배송비 (원)')
+        number('free_shipping_threshold', '무료배송 기준 (원)', help='쿠폰 차감 후 상품금액 기준. 0원은 전체 무료배송입니다.')
+    elif policy == 'benefit':
+        number('benefit_amount', '사용 주문당 추가 혜택 원가 (원)', help='적립금·사은품 등의 판매자 부담 비용입니다.')
+        number('adoption_pct', '혜택 사용 주문 비중 (%)', high=100)
+    elif policy == 'bundle':
+        number('bundle_discount_pct', '선택 상품 묶음 추가 할인율 (%)', high=100)
+        st.caption('대상 상품을 2개 이상 고르세요. 구성 상품을 모두 담은 기존 주문에 적용합니다.')
     else:
-        st.caption(f"정의: {obs.get('definition', '–')} · 표본 n={obs.get('n_current', '–')}"
-                   + (f" · p={obs['p_value']:.3f}" if obs.get("p_value") is not None else ""))
+        st.caption('노출·클릭·상세페이지 개선을 대상 주문 변화 가정과 추가 실행비로 비교합니다.')
+    number('order_change_pct', '대상 주문 수 변화 가정 (%)', -100, 1000,
+           '구매 행동에 대한 직접 입력 가정입니다. 다른 전환율을 추가로 곱하지 않습니다.')
+    number('fixed_cost', '추가 실행비 (원)', help='분석 기간 전체에서 한 번 차감하는 제작·캠페인 비용입니다.')
+    return cfg
 
-# ---------------- AI 초안 ----------------
-AKEY = llm.api_key()
-dkey = f"ai_draft_{pid}"
-with st.container(border=True):
-    a1, a2 = st.columns([3, 1])
-    a1.markdown("**AI 초안** · AI가 데이터 도구로 근거를 확인한 뒤 가설·전략(ICE)·실험 설계 초안을 씁니다.")
-    if not AKEY:
-        a1.caption("Secrets에 OPENAI_API_KEY를 넣으면 쓸 수 있습니다.")
-    elif a2.button("AI 초안 만들기", key=f"mk_{pid}", icon=":material/auto_awesome:", use_container_width=True):
-        try:
-            with st.spinner("근거 데이터를 확인하고 초안을 쓰는 중... (20~40초)"):
-                st.session_state[dkey] = llm.draft(AKEY, P, lambda name, p_: tools.run(m, name, **p_))
-        except Exception as e:  # API 오류·시간 초과: 화면은 계속
-            st.error(str(e) if isinstance(e, llm.LLMError) else f"AI 초안을 만들지 못했습니다({type(e).__name__}). 다시 시도해 주세요.")
-    if P.get("ai_draft"):
-        a1.caption(f"마지막 반영: {P['ai_draft'].get('at', '')} · 모델 {P['ai_draft'].get('model', '')}")
 
-    D = st.session_state.get(dkey)
-    if D:
-        st.markdown(D["summary"])
-        st.caption(f"모델 {D['model']}" + (f" · {llm.usage_label(D['model'], D.get('usage'))}" if D.get("usage") else ""))
-        if D["warnings"]:
-            st.warning(f"근거 데이터에서 찾지 못한 숫자가 {len(D['warnings'])}개 있습니다: {', '.join(D['warnings'])}. "
-                       "해당 칸에 '⚠️ 확인 필요'를 붙였으니 반영 전에 확인하세요.")
-        with st.expander(f"AI가 확인한 근거 데이터 ({sum('result' in c for c in D['calls'])}개)"):
-            for c in D["calls"]:
-                if "result" in c:
-                    st.markdown(f"**{c['result']['title']}** · {c['result']['period']}")
-                    for f in c["result"]["facts"]:
-                        st.markdown(f"- {f}")
-        st.markdown("**가설 초안**")
-        st.dataframe(pd.DataFrame(D["hypotheses"]).drop(columns=["작성"]), hide_index=True, width="stretch")
-        st.markdown("**전략 초안 (ICE 순)**")
-        st.dataframe(pd.DataFrame(D["strategies"])[["선택", "개선 액션", "연결 가설", "기대 영향", "Impact", "Confidence",
-                                                    "Ease", "ICE", "ICE 근거"]], hide_index=True, width="stretch")
-        e = D["experiment"]
-        st.markdown(f"**실험 초안** · {e['name']}  \n실험군(B): {e['treatment']}  \n대조군(A): {e['control']}  \n"
-                    f"주요 지표: {e['metric']} · 대상: {e['target']} · 배정: {e['unit']} · 최소 검출 효과 {e['mde']:.0f}%  \n"
-                    f"중단 기준: {e['stop']}")
-        b1, b2, _ = st.columns([1, 1, 3])
-        if b1.button("초안 반영", key=f"ap_{pid}", type="primary", icon=":material/check:"):
-            keep_h = [h for h in (P.get("hypotheses") or []) if str(h.get("가설", "")).strip()
-                      and (h.get("작성") == "분석가" or (h.get("작성") == "템플릿 초안" and h.get("채택")))]
-            keep_s = [x for x in (P.get("strategies") or []) if str(x.get("개선 액션", "")).strip()]
-            for x in keep_s:
-                x["선택"] = False
-            old = P.get("experiment") or {}
-            exp = {**{k: v for k, v in old.items() if v not in ("", None, [])},
-                   **{k: v for k, v in e.items() if not old.get(k)}}
-            store.update_problem(
-                pid, hypotheses=keep_h + D["hypotheses"], strategies=D["strategies"] + keep_s, experiment=exp,
-                ai_draft={"at": pd.Timestamp.now(tz="Asia/Seoul").strftime("%Y-%m-%d %H:%M"), "model": D["model"],
-                          "summary": D["summary"], "evidence": [c["result"]["title"] for c in D["calls"] if "result" in c]},
-                status="가설 검토" if P["status"] in ("문제 후보", "문제 정의") else P["status"])
-            for k in (f"hy_{pid}", f"stg_{pid}", dkey):
-                st.session_state.pop(k, None)
-            st.toast("AI 초안을 가설·전략·실험 설계에 반영했습니다. 각 탭에서 검토하고 고쳐 주세요.")
-            st.rerun()
-        if b2.button("버리기", key=f"dc_{pid}"):
-            st.session_state.pop(dkey, None)
-            st.rerun()
-        ui.note("AI 초안은 출발점입니다. 숫자는 데이터 도구 결과에서만 가져오도록 했지만, 원인·전략은 검증 전 가설입니다. "
-                "반영하면 이전 AI 초안과 채택하지 않은 템플릿 초안 대신 새 AI 초안이 들어가고, 분석가가 쓴 가설과 기존 전략은 유지됩니다. 실험 설계는 비어 있는 칸만 채웁니다.")
-
-tabs = st.tabs(["1. 문제 정의", "2. 가설 검토", "3. 전략 비교", "4. 실험 설계", "5. 결과 검토"])
-
-# ---------------- 1. 문제 정의 ----------------
-with tabs[0]:
-    dfn = P.get("definition") or {}
-    default_stmt = (f"{ctx.get('period', '')} 기간에 {obs.get('segment', '')}의 {obs.get('metric', '')}이(가) "
-                    + (f"{ui.fmt_value(obs.get('previous'), unit)}에서 {ui.fmt_value(obs.get('current'), unit)}로 "
-                       f"{obs.get('direction', '변화')}했다." if obs.get("previous") is not None else "확인이 필요한 수준이다."))
-    with st.form(f"def_{pid}"):
-        c1, c2 = st.columns(2)
-        target = c1.text_input("대상 고객", dfn.get("target", obs.get("segment", "")))
-        period = c2.text_input("발생 기간", dfn.get("period", ctx.get("period", "")))
-        metric = c1.text_input("문제 지표", dfn.get("metric", obs.get("metric", "")))
-        scope = c2.text_input("영향 범위 (규모)", dfn.get("scope", f"분모 {obs.get('n_current', '–')}"))
-        stmt = st.text_area("문제 문장", dfn.get("statement", default_stmt))
-        why = st.text_area("왜 중요한가 (비즈니스 영향)", dfn.get("impact", ""),
-                           placeholder="예: 이 구간 전환율이 이전 수준이면 월 완료 주문이 약 N건 더 많았을 것")
-        if st.form_submit_button("문제 정의 저장"):
-            store.update_problem(pid, definition={"target": target, "period": period, "metric": metric, "scope": scope,
-                                                  "statement": stmt, "impact": why},
-                                 status="문제 정의" if P["status"] == "문제 후보" else P["status"])
-            st.toast("문제 정의를 저장했습니다.")
-            st.rerun()
-    if obs.get("previous") is not None and obs.get("n_current") and unit == "rate":
-        lost = (obs["previous"] - obs["current"]) * obs["n_current"]
-        ui.note(f"참고 계산: 비교 기간 수준이었다면 전환이 약 {lost:+,.0f}건 {'더 많았을' if lost > 0 else '더 적었을'} 것입니다 "
-                f"(분모 {obs['n_current']:,} × 차이).")
-
-# ---------------- 2. 가설 ----------------
-TEMPLATES = {
-    "funnel": [("배송비·최소 주문 금액 부담으로 결제를 포기했다", "장바구니 금액 3만원 미만 세션의 구매율 비교"),
-               ("특정 테마·시간대에 이탈이 몰려 있다", "구간 자세히 보기에서 테마·시간대별 변화 기여 확인"),
-               ("쿠폰 조건이 맞지 않아 결제를 미뤘다", "쿠폰 사용 주문 비중 변화, 쿠폰 기간과 겹치는지 확인"),
-               ("가격 변동(할인 종료)으로 구매 매력이 낮아졌다", "구성 상품 가격 이력 확인")],
-    "theme": [("배너 메시지가 기대하게 만든 것과 상품 구성이 다르다", "테마 내 상품 클릭→장바구니율 비교"),
-              ("구성 상품의 가격대가 테마 타깃 고객에게 높다", "객단가와 고객군별 구매 전환 비교"),
-              ("상위 노출 상품의 성과가 낮아 테마 전체가 끌려 내려간다", "구성 상품별 성과 표에서 노출 순서별 확인"),
-              ("노출 위치가 바뀌거나 노출 대상 고객이 달라졌다", "방문 유형·시간대별 노출 비중 변화")],
-    "segment": [("첫 구매 경험(배송·품질)이 다음 구매로 이어지지 못한다", "첫 구매 고객 30일 재구매율 추이"),
-                ("재구매를 떠올리게 하는 접점(리마인드)이 없다", "재구매 간격 중앙값 시점 전후 방문 여부"),
-                ("선호 카테고리와 추천 테마가 맞지 않는다", "고객군별 선호 카테고리·테마 비교")],
-    "product": [("노출이 적어 관심 대비 매출 규모가 작다", "큐레이션 편성 여부, 노출 위치별 클릭 세션 비교"),
-                ("가격·용량 구성이 첫 구매 장벽이다", "가격 이력, 첫 구매 고객 비중 비교"),
-                ("관련 상품과 함께 노출되면 구매가 늘어난다", "같은 테마 안 상품들의 클릭→장바구니율 비교")],
-    "category": [("가격 인상·할인 종료로 수요가 줄었다", "가격 이력과 판매량 비교"),
-                 ("계절성으로 수요가 이동했다", "월별 카테고리 비중 추이")],
-}
-with tabs[1]:
-    hyps = P.get("hypotheses") or []
-    if not hyps:
-        tpl = TEMPLATES.get(obs.get("kind"), TEMPLATES["funnel"])
-        hyps = [{"채택": False, "가설": h, "근거": "", "반대 근거": "", "추가 확인": chk, "작성": "템플릿 초안"} for h, chk in tpl]
-    st.caption("템플릿 초안은 출발점일 뿐입니다. 근거와 반대 근거를 데이터로 채운 뒤 검토할 가설을 '채택'하세요. "
-               "위의 'AI 초안 만들기'로 데이터 근거가 붙은 초안을 받을 수도 있습니다.")
-    ed = st.data_editor(pd.DataFrame(hyps), num_rows="dynamic", width="stretch", key=f"hy_{pid}",
-                        column_config={"채택": st.column_config.CheckboxColumn(width="small"),
-                                       "가설": st.column_config.TextColumn(width="large"),
-                                       "작성": st.column_config.SelectboxColumn(options=["템플릿 초안", "AI 초안", "분석가"], width="small")})
-    if st.button("가설 저장", key=f"hys_{pid}"):
-        rows = ed.fillna("").to_dict("records")
-        store.update_problem(pid, hypotheses=rows,
-                             status="가설 검토" if P["status"] in ("문제 후보", "문제 정의") else P["status"])
-        st.toast("가설을 저장했습니다.")
-        st.rerun()
-
-# ---------------- 3. 전략 ----------------
-with tabs[2]:
-    chosen = [h["가설"] for h in (P.get("hypotheses") or []) if h.get("채택")]
-    if not chosen:
-        st.info("2단계에서 채택한 가설이 없습니다. 먼저 검토할 가설을 고르세요.")
-    strat = P.get("strategies") or [{"선택": False, "개선 액션": "", "연결 가설": chosen[0] if chosen else "",
-                                    "기대 영향": "", "Impact": 5, "Confidence": 5, "Ease": 5, "ICE 근거": ""}]
-    sdf = pd.DataFrame(strat)
-    ed = st.data_editor(sdf.drop(columns=["ICE"], errors="ignore"), num_rows="dynamic", width="stretch", key=f"stg_{pid}",
-                        column_config={
-                            "선택": st.column_config.CheckboxColumn(width="small"),
-                            "연결 가설": st.column_config.SelectboxColumn(options=chosen or [""]),
-                            "Impact": st.column_config.NumberColumn(min_value=1, max_value=10, step=1, width="small"),
-                            "Confidence": st.column_config.NumberColumn(min_value=1, max_value=10, step=1, width="small"),
-                            "Ease": st.column_config.NumberColumn(min_value=1, max_value=10, step=1, width="small")})
-    ice = ed.copy()
-    for c in ["Impact", "Confidence", "Ease"]:
-        ice[c] = pd.to_numeric(ice[c], errors="coerce")
-    ice["ICE"] = (ice["Impact"] * ice["Confidence"] * ice["Ease"]).round(0)
-    if ice["개선 액션"].fillna("").str.len().sum():
-        st.markdown("**ICE 순위** (Impact × Confidence × Ease, 각 1~10)")
-        st.dataframe(ice[ice["개선 액션"].fillna("") != ""].sort_values("ICE", ascending=False)[
-            ["개선 액션", "연결 가설", "Impact", "Confidence", "Ease", "ICE", "ICE 근거"]], hide_index=True, width="stretch")
-    if st.button("전략 저장", key=f"sts_{pid}"):
-        store.update_problem(pid, strategies=ice.fillna("").to_dict("records"),
-                             status="전략 선정" if P["status"] in ("문제 후보", "문제 정의", "가설 검토") else P["status"])
-        st.toast("전략을 저장했습니다.")
-        st.rerun()
-    ui.note("ICE 점수는 판단을 정리하는 도구일 뿐입니다. 점수마다 근거를 적어 두세요.")
-
-# ---------------- 4. 실험 설계 ----------------
-with tabs[3]:
-    ex = P.get("experiment") or {}
-    picked = [s for s in (P.get("strategies") or []) if s.get("선택")]
-    if not picked:
-        st.info("3단계에서 실행 후보(선택)를 고르면 실험 설계로 이어집니다. 지금도 직접 입력할 수 있습니다.")
-    base_rate = obs.get("current") if unit == "rate" and obs.get("current") is not None else 0.2
+def main():
+    m = ui.get_mart()
+    cur, _ = ui.period_controls()
+    st.title('Growth Lab')
+    st.caption('정책을 바꾸고 매출·비용·이익을 비교하세요. 고객 반응은 직접 조정하는 가정입니다.')
+    if store.db_error():
+        st.warning('공유 저장소에 연결하지 못해 현재 실행 환경의 파일에 저장합니다. ' + store.db_error())
+    st.caption('저장 위치 · ' + ('팀 공유 DB' if store.backend() == 'db' else '현재 실행 환경 파일'))
+    records = {p['id']: p for p in reversed(store.load()['problems'])}
+    pending = st.session_state.pop('growth_open_id', None)
+    if pending in records:
+        st.session_state.sim_record = pending
+    if st.session_state.get('sim_record') not in [None, 'new', *records]:
+        st.session_state.sim_record = 'new'
+    selected = st.selectbox('분석 근거·저장한 비교 불러오기', ['new', *records], key='sim_record',
+        format_func=lambda x: '새 정책 비교 시작' if x == 'new' else f"{records[x]['title']} · {records[x]['status']}")
+    record = records.get(selected)
+    saved = (record or {}).get('simulation') or {}
+    prefix = f'sim_{selected}'
+    st.caption('분석 기간 · ' + ui.period_label(cur))
+    if record:
+        with st.expander('저장한 분석 근거·이전 가설·전략 기록'):
+            st.write(record.get('observed', {}))
+            for field, label in [('definition', '문제 정의'), ('hypotheses', '가설'), ('strategies', '전략·ICE')]:
+                if record.get(field):
+                    st.markdown(f'**{label}**')
+                    st.write(record[field])
+            if saved:
+                st.caption(f"저장 기간 {saved.get('start')} ~ {saved.get('end')} (끝 다음 날 미포함). 현재 결과는 사이드바 기간으로 재계산합니다.")
+                st.button('저장 기간 적용', key=f'restore_{selected}', on_click=restore_period, args=(saved,))
+            st.download_button('기존 기록 JSON 내려받기', json.dumps(record, ensure_ascii=False, indent=2),
+                               file_name=f'growth_{selected}.json', mime='application/json')
+    source = saved.get('scope') or {}
+    if not saved and record:
+        observed = record.get('observed') or {}
+        source = {k: observed[k] for k in ('theme_id', 'coupon_id') if observed.get(k)}
+        if observed.get('product_id'):
+            source['product_ids'] = [observed['product_id']]
+        calls = observed.get('calls') or []
+        if calls and calls[0].get('params', {}).get('filters'):
+            source['filters'] = calls[0]['params']['filters']
+    with st.expander('적용 대상·반영 비용', expanded=True):
+        a, b = st.columns(2)
+        products = m['raw']['product']
+        cats = sorted(products.category.dropna().unique())
+        names = products.set_index('product_id').product_name.to_dict()
+        categories = a.multiselect('대상 카테고리 (비우면 전체)', cats,
+            default=[x for x in source.get('categories', []) if x in cats], key=f'{prefix}_categories')
+        ids = b.multiselect('대상 상품·묶음 구성 (비우면 전체)', list(names),
+            default=[x for x in source.get('product_ids', []) if x in names],
+            format_func=lambda x: f'{x} · {names[x]}', key=f'{prefix}_products')
+        themes = m['raw']['curation_theme'].set_index('theme_id').theme_name.to_dict()
+        coupons = m['raw']['coupon'].set_index('coupon_id').coupon_name.to_dict()
+        theme_options, coupon_options = ['', *themes], ['', 'NO_COUPON', *coupons]
+        theme = a.selectbox('대상 테마', theme_options,
+            index=theme_options.index(source.get('theme_id', '')) if source.get('theme_id', '') in theme_options else 0,
+            format_func=lambda x: themes.get(x, '전체'), key=f'{prefix}_theme')
+        coupon = b.selectbox('기존 사용 쿠폰으로 대상 제한', coupon_options,
+            index=coupon_options.index(source.get('coupon_id', '')) if source.get('coupon_id', '') in coupon_options else 0,
+            format_func=lambda x: coupons.get(x, '쿠폰 미사용' if x == 'NO_COUPON' else '전체'), key=f'{prefix}_coupon')
+        original_filters = source.get('filters') or {}
+        gender_options = ['', 'F', 'M']
+        gender = a.selectbox('고객 성별', gender_options, index=gender_options.index(original_filters.get('gender', '')),
+            format_func=lambda x: {'': '전체', 'F': '여성', 'M': '남성'}[x], key=f'{prefix}_gender')
+        grades = b.multiselect('주문 당시 고객 등급', ['BRONZE', 'SILVER', 'GOLD', 'VIP'],
+                               default=original_filters.get('grades', []), key=f'{prefix}_grades')
+        filters = {k: v for k, v in original_filters.items() if k not in ('gender', 'grades', 'grade_basis')}
+        if gender:
+            filters['gender'] = gender
+        if grades:
+            filters.update(grades=grades, grade_basis='당시')
+        if filters:
+            st.caption('고객 조건 · ' + M.describe_filters(M.clean_filters(filters), cur))
+        scope = dict(categories=categories, product_ids=ids, theme_id=theme, coupon_id=coupon, filters=filters)
+        c = S.DEFAULT_COSTS | saved.get('costs', {})
+        a, b, d = st.columns(3)
+        costs = dict(
+            shipping_per_order=a.number_input('주문당 배송 원가 (원)', 0.0, 1e7, float(c['shipping_per_order']), key=f'{prefix}_shipping_cost'),
+            fee_pct=b.number_input('결제 수수료율 (%)', 0.0, 100.0, float(c['fee_pct']), key=f'{prefix}_fee'),
+            other_per_order=d.number_input('기타 주문당 변동비 (원)', 0.0, 1e7, float(c['other_per_order']), key=f'{prefix}_other'))
+        st.caption('0인 비용은 추가 차감하지 않습니다. 비용 기준은 현재와 변경안에 동일하게 적용합니다.')
+    configs = (saved.get('scenarios', []) + [{}, {}])[:2]
+    pending = st.session_state.pop('growth_pending_scenario', None)
+    if pending:
+        for key, value in S.normalize_config(pending).items():
+            st.session_state[f'{prefix}_a_{key}'] = value
+        st.info('AI가 계산한 정책을 변경안 A에 불러왔습니다. 대상·기간·비용도 확인하세요.')
+    st.subheader('정책과 고객 반응 가정')
+    left, right = st.columns(2)
+    with left:
+        st.markdown('**변경안 A**')
+        config_a = policy_inputs(configs[0], f'{prefix}_a')
+    with right:
+        st.markdown('**변경안 B**')
+        config_b = policy_inputs(configs[1], f'{prefix}_b')
     try:
-        a_, b_ = [pd.Timestamp(x) for x in ctx.get("period", "").split(" ~ ")]
-        days = (b_ - a_).days + 1
-    except Exception:
-        days = 30
-    daily_default = max(1, int((obs.get("n_current") or 300) / days))
-
-    with st.form(f"exp_{pid}"):
-        c1, c2 = st.columns(2)
-        name = c1.text_input("실험명", ex.get("name", picked[0]["개선 액션"] if picked else ""))
-        hyp = c2.text_input("검증할 가설", ex.get("hypothesis", picked[0]["연결 가설"] if picked else ""))
-        treat = c1.text_area("실험군 (B) 변경 내용", ex.get("treatment", ""))
-        control = c2.text_area("대조군 (A)", ex.get("control", "현재 화면·정책 유지"))
-        unit_ = c1.selectbox("배정 단위", ["고객", "세션"], index=["고객", "세션"].index(ex.get("unit", "고객")),
-                             help="같은 고객이 두 조건을 모두 보지 않도록 보통 고객 단위로 배정합니다.")
-        target = c2.text_input("실험 대상", ex.get("target", obs.get("segment", "")))
-        metric = c1.text_input("주요 지표 (1개)", ex.get("metric", obs.get("metric", "")))
-        guard = c2.multiselect("가드레일 지표", ["객단가", "취소·환불 비중", "쿠폰 할인액", "공헌이익률", "전체 세션 구매 전환율"],
-                               default=ex.get("guardrails", ["객단가", "취소·환불 비중"]))
-        st.markdown("**표본·기간 산정**")
-        d1, d2, d3, d4 = st.columns(4)
-        p0 = d1.number_input("기준 전환율", 0.001, 0.999, float(ex.get("baseline", round(base_rate, 4))), format="%.4f",
-                             help="대조군에서 예상되는 주요 지표 값. 근거 데이터의 현재 값으로 채워집니다.")
-        mde = d2.number_input("최소 검출 효과 (상대 %)", 1.0, 200.0, float(ex.get("mde", 10.0)), step=1.0)
-        alpha = d3.selectbox("유의수준", [0.05, 0.1, 0.01], index=[0.05, 0.1, 0.01].index(ex.get("alpha", 0.05)))
-        power = d4.selectbox("검정력", [0.8, 0.9], index=[0.8, 0.9].index(ex.get("power", 0.8)))
-        e1, e2 = st.columns(2)
-        daily = e1.number_input("일 평균 실험 대상 수", 1, 1_000_000, int(ex.get("daily", daily_default)),
-                                help=f"근거 데이터의 분모를 기간 일수로 나눈 값({daily_default:,}/일)으로 채워집니다.")
-        stop = e2.text_input("중단 기준", ex.get("stop", "가드레일 지표가 대조군보다 유의하게 악화되면 중단"))
-        submitted = st.form_submit_button("실험 설계 저장")
-
-    n = sample_size_per_group(p0, mde / 100, alpha, power)
-    if pd.notna(n):
-        total = n * 2
-        dur = math.ceil(total / daily)
-        k1, k2, k3 = st.columns(3)
-        k1.metric("그룹당 필요 표본", f"{n:,}", border=True)
-        k2.metric("총 필요 표본", f"{total:,}", border=True)
-        k3.metric("예상 기간", f"{dur}일" + (" (최소 7일 권장)" if dur < 7 else ""), border=True)
-        ui.note(f"기준 {p0:.1%} → 목표 {p0 * (1 + mde / 100):.1%} 변화를 유의수준 {alpha}, 검정력 {power:.0%}로 찾기 위한 "
-                "두 비율 비교(정규근사) 표본입니다. 요일 효과를 고려해 1주 단위로 운영하세요.")
-        if dur > 60:
-            st.warning("예상 기간이 60일을 넘습니다. 최소 검출 효과를 키우거나 대상을 넓히는 것을 검토하세요.")
+        prepared = S.prepare(m, *cur, scope, costs)
+        results = [S.simulate(prepared, config_a), S.simulate(prepared, config_b)]
+    except (ValueError, KeyError) as exc:
+        st.session_state.pop('growth_context', None)
+        st.warning(str(exc))
+        return
+    baseline = results[0]['baseline']
+    st.subheader('현재와 비교')
+    for box, label, value in zip(st.columns(3), ['현재', '변경안 A', '변경안 B'], [baseline, results[0]['changed'], results[1]['changed']]):
+        with box.container(border=True):
+            st.markdown(f'**{label}**')
+            st.metric('완료 매출', ui.won(value['revenue'], short=False),
+                      None if label == '현재' else ui.won(value['revenue']-baseline['revenue'], short=False))
+            st.metric('반영 비용 차감 이익', ui.won(value['profit'], short=False),
+                      None if label == '현재' else ui.won(value['profit']-baseline['profit'], short=False))
+            st.caption(f"주문 수 {value['orders']:,.1f}건")
+    table = results[0]['table'][['지표', '현재']].copy()
+    for label, result in zip(['A', 'B'], results):
+        table[f'변경안 {label}'] = result['table']['변경안']
+        table[f'{label} 차이'] = result['table']['차이']
+    st.dataframe(table, hide_index=True, width='stretch')
+    chosen = st.radio('검토할 안', ['A', 'B'], horizontal=True,
+                       index=0 if saved.get('selected', 'A') == 'A' else 1, key=f'{prefix}_selected')
+    result = results[0 if chosen == 'A' else 1]
+    st.caption(f"전체 쇼핑몰 결과입니다. 선택안 적용 대상 {result['target_orders']:,}주문 · {result['target_buyers']:,}고객")
+    required = result['required_order_change']
+    if required is None:
+        st.warning('변경 후 대상 주문당 이익이 0 이하입니다. 정책·비용 구조를 먼저 검토하세요.')
     else:
-        st.warning("기준 전환율과 최소 검출 효과 조합이 0~100% 범위를 벗어납니다.")
-    if submitted:
-        store.update_problem(pid, experiment={
-            "name": name, "hypothesis": hyp, "treatment": treat, "control": control, "unit": unit_, "target": target,
-            "metric": metric, "guardrails": guard, "baseline": p0, "mde": mde, "alpha": alpha, "power": power,
-            "daily": daily, "stop": stop, "n_per_group": n, "duration_days": None if pd.isna(n) else math.ceil(n * 2 / daily)},
-            status="실험 설계 완료")
-        st.toast("실험 설계를 저장했습니다. 상태: 실험 설계 완료")
+        st.info(f"기존 이익 유지에 필요한 대상 주문 변화 {required*100:+.2f}% · 입력한 가정 {result['config']['order_change_pct']:+g}%")
+    with st.expander('대상·비용별 상세와 계산 기준'):
+        st.dataframe(pd.DataFrame([{'범위': '대상 현재', **result['target_baseline']},
+            {'범위': '대상 변경 (추가 실행비 제외)', **result['target_changed']},
+            {'범위': '대상 밖 공통', **result['outside']}]).rename(columns=S.LABELS), hide_index=True, width='stretch')
+        for note in result['notes']:
+            st.caption(note)
+        st.caption('추가 실행비는 전체에서 한 번 차감합니다. 주문 수는 기대값이므로 소수일 수 있습니다.')
+    with st.expander('주문 반응에 따른 민감도', expanded=True):
+        sensitivity = S.sensitivity(prepared, result['config'])
+        st.altair_chart(alt.Chart(sensitivity).mark_line(point=True, color=ui.C_MAIN).encode(
+            x=alt.X('주문 변화 가정 (%):Q'), y=alt.Y('반영 비용 차감 이익:Q', axis=alt.Axis(format='~s')),
+            tooltip=list(sensitivity.columns)), width='stretch')
+        st.caption('현재 가정의 전후 10%p와 변화 0% 비교입니다. 시나리오 민감도이며 통계적 신뢰구간과 구분합니다.')
+    snapshot = dict(version=S.VERSION, start=prepared['start'], end=prepared['end'], scope=scope, costs=costs,
+        scenarios=[config_a, config_b], selected=chosen, facts=S.evidence(prepared, result), notes=result['notes'],
+        comparison=table.to_dict('records'))
+    st.session_state.growth_context = snapshot
+    st.subheader('AI와 검토하기')
+    st.caption('AI는 정책 후보·확인할 가정을 제안하고 계산 결과를 설명합니다. 정책값을 검토한 뒤 적용하세요.')
+    if st.button('이 비교안의 손익과 확인할 가정 설명', key=f'{prefix}_ai'):
+        st.session_state.pending_q = '현재 Growth Lab 비교안을 설명하고 손익 유지 조건과 실행 전에 확인할 가정을 알려줘.'
+        st.session_state.active_dash = None
         st.rerun()
-
-# ---------------- 5. 결과 검토 ----------------
-with tabs[4]:
-    st.info("실제 실험 결과 데이터가 없어 기본 상태는 '실험 설계 완료'입니다. 결과 수치가 생기면 아래에 입력해 효과와 불확실성을 확인할 수 있습니다.")
-    res = (P.get("experiment") or {}).get("result", {})
-    with st.form(f"res_{pid}"):
-        mock = st.checkbox("모의 결과입니다 (실제 실험 아님)", value=res.get("mock", True))
-        r1, r2, r3, r4 = st.columns(4)
-        na = r1.number_input("대조군 대상 수", 0, 10_000_000, int(res.get("na", 0)))
-        xa = r2.number_input("대조군 전환 수", 0, 10_000_000, int(res.get("xa", 0)))
-        nb = r3.number_input("실험군 대상 수", 0, 10_000_000, int(res.get("nb", 0)))
-        xb = r4.number_input("실험군 전환 수", 0, 10_000_000, int(res.get("xb", 0)))
-        decision = st.selectbox("판단", ["미정", "도입", "수정 후 재실험", "중단"],
-                                index=["미정", "도입", "수정 후 재실험", "중단"].index(res.get("decision", "미정")))
-        ok = st.form_submit_button("결과 저장")
-    if na and nb and xa <= na and xb <= nb:
-        pa, pb = xa / na, xb / nb
-        z, p = two_prop_test(xb, nb, xa, na)
-        se = math.sqrt(pa * (1 - pa) / na + pb * (1 - pb) / nb)
-        lo, hi = (pb - pa) - 1.96 * se, (pb - pa) + 1.96 * se
-        c1, c2, c3 = st.columns(3)
-        c1.metric("대조군 → 실험군", f"{pa:.2%} → {pb:.2%}", f"{(pb - pa) * 100:+.2f}%p", border=True)
-        c2.metric("상대 변화", f"{(pb / pa - 1) * 100:+.1f}%" if pa else "–", border=True)
-        c3.metric("p값", f"{p:.4f}", border=True)
-        st.markdown(f"차이의 95% 신뢰구간: **{lo * 100:+.2f}%p ~ {hi * 100:+.2f}%p**"
-                    + (" · 0을 포함하므로 효과가 있다고 말하기 어렵습니다." if lo <= 0 <= hi else ""))
-        if mock:
-            st.caption("⚠️ 모의 결과입니다.")
-    if ok:
-        ex = P.get("experiment") or {}
-        ex["result"] = {"mock": mock, "na": na, "xa": xa, "nb": nb, "xb": xb, "decision": decision}
-        store.update_problem(pid, experiment=ex)
-        st.toast("결과를 저장했습니다.")
+    with st.form(f'{prefix}_save'):
+        title = st.text_input('비교 기록 이름', (record or {}).get('title', '정책 시뮬레이션 비교'))
+        reason = st.text_area('선택 이유·다음 행동', saved.get('decision', ''))
+        save = st.form_submit_button('비교안과 판단 저장', type='primary')
+    if save:
+        payload = {**snapshot, 'decision': reason}
+        pid = selected
+        if record is None:
+            pid = store.add_problem({'kind': 'simulation', 'title': title or '정책 비교', 'facts': snapshot['facts']},
+                                     'Growth Lab', {'period': ui.period_label(cur)}, simulation=payload, status='전략 선정')
+        else:
+            store.update_problem(pid, title=title or '정책 비교', simulation=payload, status='전략 선정')
+        st.session_state.growth_open_id = pid
         st.rerun()
-
-# ---------------- 내보내기 ----------------
-st.divider()
-P = store.get_problem(pid)
-
-
-def to_md(p):
-    dfn, ex = p.get("definition") or {}, p.get("experiment") or {}
-    lines = [f"# {p['title']}", f"- ID: {p['id']} · 상태: {p['status']} · 출처: {p['source_page']}", "",
-             "## 문제 정의", dfn.get("statement", "(미작성)"), f"- 대상: {dfn.get('target', '')}",
-             f"- 기간: {dfn.get('period', '')}", f"- 지표: {dfn.get('metric', '')}", f"- 영향: {dfn.get('impact', '')}", "",
-             "## 가설"]
-    if p.get("ai_draft"):
-        a = p["ai_draft"]
-        lines[-1:-1] = ["## AI 근거 요약", a.get("summary", ""), f"- 확인한 데이터: {', '.join(a.get('evidence', []))} "
-                        f"({a.get('at', '')}, {a.get('model', '')})", ""]
-    for h in p.get("hypotheses") or []:
-        lines.append(f"- [{'x' if h.get('채택') else ' '}] {h.get('가설', '')} (근거: {h.get('근거', '')} / 반대 근거: "
-                     f"{h.get('반대 근거', '')} / 추가 확인: {h.get('추가 확인', '')}) _{h.get('작성', '')}_")
-    lines += ["", "## 전략 (ICE)"]
-    for s in sorted(p.get("strategies") or [], key=lambda s: -(s.get("ICE") or 0)):
-        lines.append(f"- {'★ ' if s.get('선택') else ''}{s.get('개선 액션', '')} · ICE {s.get('ICE', '')} · {s.get('ICE 근거', '')}")
-    lines += ["", "## 실험 설계"]
-    for k, lab in [("name", "실험명"), ("hypothesis", "가설"), ("treatment", "실험군"), ("control", "대조군"), ("unit", "배정 단위"),
-                   ("target", "대상"), ("metric", "주요 지표"), ("guardrails", "가드레일"), ("baseline", "기준 전환율"),
-                   ("mde", "최소 검출 효과(%)"), ("n_per_group", "그룹당 표본"), ("duration_days", "예상 기간(일)"), ("stop", "중단 기준")]:
-        lines.append(f"- {lab}: {ex.get(k, '')}")
-    return "\n".join(lines)
+    st.download_button('현재 비교 JSON 내려받기', json.dumps(snapshot, ensure_ascii=False, indent=2),
+                       file_name='growth_simulation.json', mime='application/json')
+    with st.expander('선택 기능 · 실험 설계와 결과 검토'):
+        if record:
+            sessions = M.in_period(m['sessions'], 'start', *cur)
+            growth_experiment.render(record, sessions, (cur[1]-cur[0]).days)
+        else:
+            st.info('비교안을 저장하면 실험 설계를 이어서 작성할 수 있습니다.')
 
 
-st.download_button("이 문제의 계획서 내려받기 (.md)", to_md(P), file_name=f"{pid}.md", icon=":material/download:")
+def restore_period(saved):
+    st.session_state.period_mode = '직접 선택'
+    st.session_state.period_range = (pd.Timestamp(saved['start']).date(), (pd.Timestamp(saved['end']) - pd.Timedelta(days=1)).date())
+
+
+main()

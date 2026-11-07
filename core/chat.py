@@ -7,6 +7,7 @@ OPENAI_API_KEY(또는 GEMINI_API_KEY)가 있으면: 질문 → AI가 도구(core
 from __future__ import annotations
 
 import altair as alt
+import pandas as pd
 import streamlit as st
 
 from core import llm, popup, store, tools, ui
@@ -127,6 +128,10 @@ def ask_next(q: str):
 
 def save_to_lab(e: dict, res: dict, key: str):
     """분석 결과 하나를 Growth Lab 문제 후보로 저장 (질문·AI 설명·근거 사실을 함께 넘긴다)."""
+    if res.get("simulation"):
+        st.button("Growth Lab에서 이 정책 비교하기", key=f"open_{key}", on_click=open_simulation,
+                  args=(res["simulation"],))
+        return
     ctx = {"page": "AI 분석가", "period": res["period"], "compare": ""}
     default_title = res["title"]
     if key in e.get("saved", []) or store.already_saved(default_title, ctx):
@@ -142,11 +147,24 @@ def save_to_lab(e: dict, res: dict, key: str):
                 cand = {"kind": "ask", "title": title.strip() or default_title, "metric": res["title"],
                         "definition": memo.strip() or f"AI 분석가 질문: {e['q']}",
                         "question": e["q"], "answer": e.get("a", ""), "facts": list(res.get("facts", [])),
-                        "tools": e.get("tools", []), "unit": "rate"}
+                        "tools": e.get("tools", []), "unit": "rate", "calls": e.get("calls", [])}
                 store.add_problem(cand, "AI 분석가", ctx)
                 e.setdefault("saved", []).append(key)
                 st.toast(f"'{cand['title']}'을(를) Growth Lab 문제 후보로 저장했습니다.")
                 st.rerun()
+
+
+def open_simulation(payload):
+    """Explicitly import a scenario together with its period, scope and costs."""
+    title = "AI 정책 비교 · " + payload["scenarios"][0]["policy"]
+    pid = store.add_problem({"kind": "simulation", "title": title, "facts": payload["facts"]},
+        "AI 분석가", {"period": payload["start"] + " ~ " + payload["end"]}, simulation=payload)
+    st.session_state.growth_open_id = pid
+    st.session_state.period_mode = "직접 선택"
+    st.session_state.period_range = (pd.Timestamp(payload["start"]).date(),
+                                    (pd.Timestamp(payload["end"]) - pd.Timedelta(days=1)).date())
+    st.session_state.goto_growth = True
+    st.session_state.active_dash = None
 
 
 def _run_direct(m, tool: str, params: dict) -> dict:
@@ -164,7 +182,8 @@ def _answer(m, key, log: list, question: str, tool: str | None = None, params: d
         history = [{"q": e["q"], "a": e.get("a", "")} for e in log]
         try:
             with st.spinner("데이터를 찾아 분석하는 중..."):
-                r = llm.ask(key, question, lambda name, p: tools.run(m, name, **p), history)
+                context = st.session_state.get("growth_context") if st.session_state.get("growth_active") else None
+                r = llm.ask(key, question, lambda name, p: tools.run(m, name, **p), history, growth_context=context)
             entry.update(a=r["text"], answer=r.get("answer"), model=r["model"], usage=llm.usage_label(r["model"], r.get("usage")), clarify=r.get("clarify"),
                          unverified=llm.unsupported_in_answer(r["text"], r["calls"]),
                          results=[c["result"] for c in r["calls"] if "result" in c],
@@ -179,7 +198,7 @@ def _answer(m, key, log: list, question: str, tool: str | None = None, params: d
     else:
         entry.update(_run_direct(m, tool, params or {}))
     log.append(entry)
-    if popup.spec_from_calls(entry.get("calls")):
+    if popup.spec_from_calls(entry.get("calls")) and not st.session_state.get("growth_active"):
         st.session_state.active_dash = len(log) - 1      # 답변이 나오면 왼쪽에 대시보드를 바로 띄운다
 
 
@@ -222,7 +241,7 @@ def render(m):
 
         with st.container(height=520, border=False, key="chat_msgs"):
             if not log:
-                st.caption("궁금한 것을 물어보면 데이터를 찾아 숫자와 차트로 보여 드립니다. "
+                st.caption("궁금한 것을 물어보면 데이터를 찾고, 정책을 바꾸면 가정에 따른 손익도 비교합니다. "
                            "다른 화면으로 옮겨 가도 대화는 이어집니다. 데이터 기간: 2026-04-01 ~ 2026-09-30")
                 if not key:
                     st.info("AI 모델이 아직 연결되지 않아 예시 질문에만 답할 수 있어요. "

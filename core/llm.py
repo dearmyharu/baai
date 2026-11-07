@@ -53,6 +53,9 @@ SYSTEM = """너는 식품 이커머스 회사의 'AI 분석가'다. 데이터 �
   두 기간을 rank_items로 따로 불러 TOP 목록끼리 비교하지 않는다. "지난주에 2주 전보다 빠진 상품" → 지난주 기간
   (start=2026-09-21, end=2026-09-28)만 넘기면 도구가 그 전 주(09-14~09-20)와 비교한다.
 - "잘 팔린/제일 잘 팔려"는 매출 기준으로 보고 답변에 '매출 기준'이라고 밝힌다. "많이 팔린 개수/수량/판매량" → rank_items(metric=수량)
+- 정책 변경의 예상 손익·할인·가격·배송 조건 비교 → simulate_policy. 관측 사실·정책 재계산·사용자 가정을 구분한다.
+  주문 반응은 사용자가 말하지 않으면 0%로 두고 밝힌다. 변경 정책값이 없으면 먼저 물어본다.
+  정책 후보와 검토 이유는 제안할 수 있으나 증가율을 임의로 확정하지 않는다. 기존 매출 조회는 기존 도구를 쓴다.
 
 [고객 조건]
 - "여성 30대", "서울 고객", "VIP", "카카오로 가입한", "신규 가입", "첫 구매"처럼 대상 고객 조건이 있으면 filters에 넣는다. 없으면 filters를 넣지 않는다.
@@ -71,7 +74,8 @@ SYSTEM = """너는 식품 이커머스 회사의 'AI 분석가'다. 데이터 �
 3. 데이터로 확인된 사실과 원인·대책(가설)을 구분한다. 원인·대책은 '가설'이라고 표시하고 확인 방법을 덧붙인다.
 4. 질문의 전제가 데이터와 다르면(예: 떨어졌냐고 물었는데 실제로는 늘었음) 먼저 바로잡는다.
 5. 데이터에 없는 것: 광고비·광고 유입·ROAS, 결제 페이지 진입, 상세페이지 체류 시간, 경쟁사 가격, 비회원 방문, 매출 예측.
-   이런 질문은 도구를 부르지 말고 '이 데이터에는 없다'고 밝힌 뒤 대신 볼 수 있는 지표를 제안한다
+   실제 미래 매출 예측은 지원하지 않는다. 정책·반응 가정을 명시한 시나리오 손익 비교는 simulate_policy로 지원한다.
+   그 밖의 없는 정보 질문은 도구를 부르지 말고 '이 데이터에는 없다'고 밝힌 뒤 대신 볼 수 있는 지표를 제안한다
    (ROAS → 쿠폰 효율, 결제 이탈 → 장바구니→구매 전환율, 체류 시간 → 클릭 후 구매율, 예측 → 최근 추이).
 6. 아직 도구가 없는 분석: 함께 사는 상품 조합, 결제수단별 분석, 고객 한 명 단위 조회.
    '아직 지원하지 않는다'고 밝히고 가능한 대체 분석을 안내한다. 숫자를 지어내지 않는다.
@@ -144,6 +148,28 @@ def parse_answer(text: str) -> dict | None:
 
 # 도구 입력값의 형식 (Gemini function declaration, OpenAPI 스키마)
 PARAM_SCHEMA = {
+    "policy_config": {"type": "object", "description": "질문·Growth Lab에서 확인한 정책 조건. 비율은 % 단위(5 = 5%).", "properties": {
+        "policy": {"type": "string", "enum": ["price", "discount", "shipping", "benefit", "bundle", "volume"]},
+        "price_change_pct": {"type": "number", "description": "선택 상품 판매가격 변화 %"},
+        "discount_type": {"type": "string", "enum": ["rate", "fixed"]},
+        "discount_value": {"type": "number", "description": "정률 % 또는 정액 원. 기존 주문 쿠폰 교체"},
+        "discount_cap": {"type": "number", "description": "최대 할인 원. 0은 제한 없음"},
+        "minimum_order": {"type": "number", "description": "쿠폰 차감 전 최소 주문 상품금액 원"},
+        "adoption_pct": {"type": "number", "description": "새 쿠폰·혜택 적용 주문 비중 %. 기본 100"},
+        "shipping_fee": {"type": "number", "description": "고객 부담 배송비 원"},
+        "free_shipping_threshold": {"type": "number", "description": "쿠폰 차감 후 무료배송 기준 원. 0은 전체 무료"},
+        "benefit_amount": {"type": "number", "description": "사용 주문당 적립금·사은품 원가 원"},
+        "bundle_discount_pct": {"type": "number", "description": "묶음 구성 상품 추가 할인 %"},
+        "order_change_pct": {"type": "number", "description": "대상 주문 변화 가정 %. 지정하지 않으면 0"},
+        "fixed_cost": {"type": "number", "description": "기간 전체 추가 실행비 원"}}, "required": ["policy"]},
+    "simulation_scope": {"type": "object", "properties": {
+        "product_ids": {"type": "array", "items": {"type": "string"}},
+        "categories": {"type": "array", "items": {"type": "string"}},
+        "theme_id": {"type": "string"}, "coupon_id": {"type": "string"}}},
+    "simulation_costs": {"type": "object", "properties": {
+        "shipping_per_order": {"type": "number", "description": "주문당 배송 원가 원"},
+        "fee_pct": {"type": "number", "description": "결제 수수료율 %"},
+        "other_per_order": {"type": "number", "description": "기타 주문당 변동비 원"}}},
     "start": {"type": "string", "description": "시작일 YYYY-MM-DD"},
     "end": {"type": "string", "description": "끝 다음 날 YYYY-MM-DD (미포함). 9월이면 2026-10-01"},
     "target": {"type": "string", "enum": ["product", "category"], "description": "상품별 또는 카테고리별"},
@@ -179,6 +205,7 @@ PARAM_SCHEMA = {
     "compare": {"type": "boolean", "description": "직전 기간과 비교해 변화도 볼지"},
 }
 REQUIRED = ["start", "end"]
+PARAM_SCHEMA["simulation_scope"]["properties"]["filters"] = PARAM_SCHEMA["filters"]
 
 
 class LLMError(Exception):
@@ -193,13 +220,17 @@ def function_declarations() -> list[dict]:
     out = []
     for t in T.TOOLS.values():
         props = {p: PARAM_SCHEMA[p] for p in t.params}
+        required = [r for r in REQUIRED if r in props]
+        if t.name == "simulate_policy":
+            required.append("policy_config")
         out.append({"name": t.name, "description": t.description,
-                    "parameters": {"type": "object", "properties": props, "required": [r for r in REQUIRED if r in props]}})
+                    "parameters": {"type": "object", "properties": props, "required": required}})
     return out
 
 
 # 답변에 도구 이름이 새어 나오면 실무자용 이름으로 바꾼다 (시스템 지시 10번의 안전장치)
 TOOL_KO = {
+    "simulate_policy": "정책 시뮬레이션",
     "get_kpis": "핵심 지표", "get_coupon_efficiency": "쿠폰 효율 분석", "rank_items": "매출 순위",
     "explain_revenue_change": "매출 변화 분해", "get_trend": "매출 추이", "get_funnel": "구매 퍼널 분석",
     "detect_changes": "변화 탐지", "get_themes": "큐레이션 테마 분석", "get_retention": "재구매 분석",
@@ -590,7 +621,7 @@ def clarify_period(question: str) -> dict:
 # 질문 하나에 답하기 (AI 분석가)
 # ---------------------------------------------------------------------------
 def ask(key: str, question: str, run_tool: Callable[[str, dict], dict], history: list[dict] | None = None,
-        model: str | None = None) -> dict:
+        model: str | None = None, growth_context: dict | None = None) -> dict:
     """반환: {"text": 답변, "calls": [{"tool", "params", "result" 또는 "error"}], "model": 모델명}
     기간이 애매한 질문이면 AI를 부르지 않고 {"clarify": [기간 선택지]}를 함께 돌려준다(토큰 0)."""
     if vague_period(question):
@@ -601,7 +632,14 @@ def ask(key: str, question: str, run_tool: Callable[[str, dict], dict], history:
         if h.get("a"):
             contents.append({"role": "model", "parts": [{"text": h["a"]}]})
     contents.append({"role": "user", "parts": [{"text": question}]})
-    r = _tool_loop(key, SYSTEM + ANSWER_FORMAT, contents, run_tool, model or pick_model(key), answer_schema=ANSWER_SCHEMA)
+    system = SYSTEM + ANSWER_FORMAT
+    if growth_context:
+        system += ("\n[현재 Growth Lab 비교 화면]\n다음 JSON은 Python 계산값과 사용자 가정이다. "
+                   "설명 요청은 selected와 scenarios에서 선택안을 찾아 simulate_policy를 호출한다. "
+                   "기간·대상·비용을 그대로 전달하고 사용자가 바꾸라고 한 값만 변경한다. "
+                   "관측값과 가정 기반 결과를 구분한다. 가설 3개·ICE·실험안을 강제하지 않는다. "
+                   "입력하지 않은 반응률을 만들지 않는다.\n" + json.dumps(growth_context, ensure_ascii=False, default=str))
+    r = _tool_loop(key, system, contents, run_tool, model or pick_model(key), answer_schema=ANSWER_SCHEMA)
     a = parse_answer(r["text"])
     if a:
         r["answer"], r["text"] = a, compose_answer(a)

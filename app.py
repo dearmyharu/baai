@@ -32,6 +32,9 @@ pages = {
     ],
 }
 page = st.navigation(pages)
+st.session_state.growth_active = page.title == "Growth Lab"
+if st.session_state.pop("goto_growth", False):
+    st.switch_page("views/growth_lab.py")
 if st.session_state.pop("goto_overview", False):      # 질문 대시보드의 '이 기간으로 통합 현황 열기'
     st.switch_page("views/overview.py")
 

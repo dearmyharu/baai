@@ -852,7 +852,7 @@ def _grade_at(m: dict, df: pd.DataFrame, time_col: str) -> pd.Series:
     x = pd.merge_asof(x, gh[["customer_id", "effective_from", "effective_to", "membership_grade"]],
                       left_on=time_col, right_on="effective_from", by="customer_id", direction="backward")
     ok = x["effective_to"].isna() | (x[time_col] < x["effective_to"])
-    return x.set_index("index")["membership_grade"].where(ok).reindex(df.index)
+    return pd.Series(x["membership_grade"].where(ok).values, index=x["index"].values).reindex(df.index)
 
 
 def clean_filters(f: dict | None) -> dict:

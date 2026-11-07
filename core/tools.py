@@ -19,6 +19,7 @@ import pandas as pd
 
 from . import analysis as A
 from . import metrics as M
+from . import simulation as S
 from .data import PERIOD_END, PERIOD_START
 
 LAST_DAY = PERIOD_END - pd.Timedelta(days=1)
@@ -522,6 +523,31 @@ def design_experiment(m, start, end, step=3, lift=0.05):
 # ---------------------------------------------------------------------------
 # 도구 목록 (LLM에 넘길 설명)
 # ---------------------------------------------------------------------------
+def simulate_policy(m, start, end, policy_config, simulation_scope=None, simulation_costs=None):
+    """The same replay engine used by Growth Lab. This tool does not save records."""
+    cur = _period(start, end)
+    if not isinstance(policy_config, dict) or "policy" not in policy_config:
+        raise ValueError("정책 유형과 변경 조건을 확인해 주세요.")
+    required = {"price": "price_change_pct", "discount": "discount_value", "shipping": "shipping_fee",
+                "benefit": "benefit_amount", "bundle": "bundle_discount_pct", "volume": "order_change_pct"}
+    field = required.get(policy_config["policy"])
+    if not field or field not in policy_config:
+        raise ValueError("정책의 변경값을 질문에서 확인한 뒤 입력해 주세요.")
+    if policy_config["policy"] == "shipping" and "free_shipping_threshold" not in policy_config:
+        raise ValueError("무료배송 기준 금액도 확인해 주세요.")
+    prepared = S.prepare(m, *cur, simulation_scope, simulation_costs)
+    result = S.simulate(prepared, policy_config)
+    out = _result("정책 시뮬레이션 · " + S.POLICIES[result["config"]["policy"]], _label(cur),
+        S.evidence(prepared, result),
+        {"kind": "bar", "data": pd.DataFrame({"조건": ["현재", "변경안"],
+         "반영 비용 차감 이익": [result["baseline"]["profit"], result["changed"]["profit"]]}),
+         "x": "반영 비용 차감 이익", "y": "조건", "x_fmt": ",.0f"}, result["table"], result["notes"])
+    out["simulation"] = {"version": S.VERSION, "start": prepared["start"], "end": prepared["end"],
+        "scope": prepared["scope"], "costs": prepared["costs"], "scenarios": [result["config"], dict(S.DEFAULT_CONFIG)],
+        "selected": "A", "facts": out["facts"], "notes": out["notes"], "comparison": result["table"].to_dict("records")}
+    return out
+
+
 @dataclass
 class Tool:
     name: str
@@ -580,6 +606,10 @@ FILTERABLE = {"get_kpis", "get_coupon_efficiency", "rank_items", "compare_items"
               "segment_preference", "segment_repeat", "get_segments"}
 
 _TOOL_LIST = [
+    Tool("simulate_policy", "Growth Lab 정책 시뮬레이션. 가격·쿠폰·배송·혜택·묶음·노출 개선 조건을 바꿔 매출·비용·이익과 "
+         "손익 유지 주문 변화를 계산한다. 고객 반응은 사용자 가정이며 기본 0%. 변경값은 질문 또는 현재 Growth Lab 설정에서 가져온다. "
+         "simulation_scope로 상품·카테고리·고객·테마·기존 쿠폰을 제한한다.",
+         PERIOD | {"policy_config": "정책 조건", "simulation_scope": "적용 대상", "simulation_costs": "반영 변동비"}, simulate_policy, []),
     Tool("get_kpis", "기간의 핵심 지표(매출·주문·고객·객단가·전환율·재구매·쿠폰·취소환불)와 직전 기간 대비 변화. "
          "'지난달 매출', '이번 주 주문 수', '객단가', '구매 고객 수', '취소·환불' 질문",
          PERIOD, get_kpis, [1, 2, 5, 6, 9]),
@@ -651,6 +681,8 @@ def run(m, name: str, **params) -> dict:
 # ---------------------------------------------------------------------------
 SEP, AUG = ("2026-09-01", "2026-10-01"), ("2026-08-01", "2026-09-01")
 EXAMPLES = [
+    ("이번 달 판매가격을 5% 올리고 주문 수가 그대로면 이익은?", "simulate_policy",
+     dict(start=SEP[0], end=SEP[1], policy_config={"policy": "price", "price_change_pct": 5})),
     ("이번 달 매출 어때?", "get_kpis", dict(start=SEP[0], end=SEP[1])),
     ("이번 달 매출 제일 많이 나온 상품 TOP5는?", "rank_items", dict(start=SEP[0], end=SEP[1], target="product", n=5)),
     ("지난달보다 매출이 왜 이만큼 변했어?", "explain_revenue_change", dict(start=SEP[0], end=SEP[1])),
