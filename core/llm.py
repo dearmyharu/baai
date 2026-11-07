@@ -151,6 +151,7 @@ PARAM_SCHEMA = {
     "policy_config": {"type": "object", "description": "질문·Growth Lab에서 확인한 정책 조건. 비율은 % 단위(5 = 5%).", "properties": {
         "policy": {"type": "string", "enum": ["price", "discount", "shipping", "benefit", "bundle", "volume"]},
         "price_change_pct": {"type": "number", "description": "선택 상품 판매가격 변화 %"},
+        "price_overrides": {"type": "object", "description": "상품 ID별 변경 단가 원. 현재 화면 값을 그대로 전달. 가격 변화율과 함께 사용하지 않음", "additionalProperties": {"type": "number"}},
         "discount_type": {"type": "string", "enum": ["rate", "fixed"]},
         "discount_value": {"type": "number", "description": "정률 % 또는 정액 원. 기존 주문 쿠폰 교체"},
         "discount_cap": {"type": "number", "description": "최대 할인 원. 0은 제한 없음"},

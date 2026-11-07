@@ -531,6 +531,8 @@ def simulate_policy(m, start, end, policy_config, simulation_scope=None, simulat
     required = {"price": "price_change_pct", "discount": "discount_value", "shipping": "shipping_fee",
                 "benefit": "benefit_amount", "bundle": "bundle_discount_pct", "volume": "order_change_pct"}
     field = required.get(policy_config["policy"])
+    if policy_config["policy"] == "price" and policy_config.get("price_overrides"):
+        field = "price_overrides"
     if not field or field not in policy_config:
         raise ValueError("정책의 변경값을 질문에서 확인한 뒤 입력해 주세요.")
     if policy_config["policy"] == "shipping" and "free_shipping_threshold" not in policy_config:

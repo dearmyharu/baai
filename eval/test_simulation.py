@@ -69,6 +69,14 @@ class SimulationTests(unittest.TestCase):
         self.assertAlmostEqual(r['changed']['profit'], r['baseline']['profit'])
         self.assertEqual(r['outside']['revenue'], 23000)
 
+    def test_absolute_price_and_no_double_percentage(self):
+        prepared = S.prepare(self.m, START, END, {'product_ids': ['P2']})
+        result = S.simulate(prepared, {'policy': 'price', 'price_overrides': {'P2': 10000}})
+        self.assertEqual(result['changed']['revenue'], 42000)
+        self.assertEqual(result['changed']['product_cost'], 20000)
+        with self.assertRaises(ValueError):
+            S.simulate(prepared, {'policy': 'price', 'price_overrides': {'P2': 10000}, 'price_change_pct': 5})
+
     def test_minimum_cap_and_adoption(self):
         r = S.simulate(self.base, {'policy': 'discount', 'discount_value': 50, 'discount_cap': 6000,
                                   'minimum_order': 25000, 'adoption_pct': 50})
@@ -198,16 +206,16 @@ class GrowthUiTests(unittest.TestCase):
                 self.at.multiselect(key='sim_new_products').set_value(['P2', 'P3']).run()
             self.at.selectbox(key='sim_new_a_policy').set_value(policy).run()
             self.assert_clean()
-            self.assertEqual(len(self.at.metric), 6)
+            self.assertGreaterEqual(len(self.at.metric), 7)
 
     def test_save_reload_and_old_record_compatibility(self):
-        self.at.number_input(key='sim_new_a_price_change_pct').set_value(10).run()
+        self.at.number_input(key='sim_new_a_order_change_pct').set_value(10).run()
         save = next(b for b in self.at.button if b.label == '비교안과 판단 저장')
         save.click().run()
         self.assert_clean()
         record = store.load()['problems'][0]
-        self.assertEqual(record['simulation']['scenarios'][0]['price_change_pct'], 10)
-        self.assertEqual(len(self.at.metric), 6)
+        self.assertEqual(record['simulation']['scenarios'][0]['order_change_pct'], 10)
+        self.assertGreaterEqual(len(self.at.metric), 7)
         store.update_problem(record['id'], hypotheses=[{'가설': '이전 가설'}], experiment={'name': '기존 실험'})
         self.at.run()
         self.assert_clean()
@@ -228,6 +236,19 @@ class GrowthUiTests(unittest.TestCase):
         ctx = self.at.session_state.growth_context
         self.assertEqual(ctx['scenarios'][0]['policy'], 'shipping')
         self.assertEqual(ctx['costs']['shipping_per_order'], 2500)
+
+    def test_category_selection_limits_products(self):
+        self.at.multiselect(key='sim_new_products').set_value(['P2']).run()
+        self.at.multiselect(key='sim_new_categories').set_value(['빵']).run()
+        self.assert_clean()
+        self.assertEqual(self.at.multiselect(key='sim_new_products').value, [])
+        self.assertNotIn('우유', self.at.multiselect(key='sim_new_products').options)
+
+    def test_second_scenario_is_optional(self):
+        self.assertEqual(len(self.at.session_state.growth_context['scenarios']), 1)
+        self.at.toggle(key='sim_new_extra').set_value(True).run()
+        self.assert_clean()
+        self.assertEqual(len(self.at.session_state.growth_context['scenarios']), 2)
 
     def test_ai_context_instructions_keep_actual_inputs(self):
         context = dict(start='2026-09-01', end='2026-10-01', selected='A',

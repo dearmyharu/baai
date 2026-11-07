@@ -15,6 +15,7 @@ POLICIES = {
 }
 DEFAULT_COSTS = {"shipping_per_order": 0.0, "fee_pct": 0.0, "other_per_order": 0.0}
 DEFAULT_CONFIG = {
+    "price_overrides": {},
     "policy": "price", "price_change_pct": 0.0, "discount_type": "rate", "discount_value": 0.0,
     "discount_cap": 0.0, "minimum_order": 0.0, "adoption_pct": 100.0,
     "shipping_fee": 0.0, "free_shipping_threshold": 0.0, "benefit_amount": 0.0,
@@ -49,7 +50,13 @@ def normalize_config(config):
         raise ValueError("지원하는 정책을 선택해 주세요.")
     if out["discount_type"] not in ("rate", "fixed"):
         raise ValueError("할인은 rate(정률) 또는 fixed(정액)로 지정해 주세요.")
-    for key in set(DEFAULT_CONFIG) - {"policy", "discount_type"}:
+    overrides = out["price_overrides"]
+    if not isinstance(overrides, dict):
+        raise ValueError("상품별 변경 가격 형식을 확인해 주세요.")
+    out["price_overrides"] = {str(k): _number(v, "변경 가격") for k, v in overrides.items()}
+    if overrides and out["price_change_pct"] != 0:
+        raise ValueError("상품별 변경 가격과 가격 변화율 중 하나만 사용하세요.")
+    for key in set(DEFAULT_CONFIG) - {"policy", "discount_type", "price_overrides"}:
         low = -100.0 if key in ("price_change_pct", "order_change_pct") else 0.0
         high = 100.0 if key in ("adoption_pct", "bundle_discount_pct") else 1000.0 if key.endswith("_pct") else 1e12
         out[key] = _number(out[key], key, low, high)
@@ -122,7 +129,7 @@ def prepare(m, start, end, scope=None, costs=None):
                                       ("other_per_order", "기타 주문 변동비")) if costs[key] == 0]
     if missing:
         notes.append("0으로 입력되어 추가 차감하지 않은 비용: " + ", ".join(missing))
-    return {"ledger": ledger, "scope": scope, "costs": costs, "start": str(start.date()),
+    return {"ledger": ledger, "selected_items": selected_items, "scope": scope, "costs": costs, "start": str(start.date()),
             "end": str(end.date()), "notes": notes}
 
 
@@ -157,7 +164,17 @@ def simulate(prepared, config=None):
     if not target.any():
         raise ValueError("선택 정책을 적용할 대상 주문이 없습니다.")
     if policy == "price":
-        rows.loc[target, "gross"] += rows.loc[target, "selected_gross"] * c["price_change_pct"] / 100
+        if c["price_overrides"]:
+            items = prepared["selected_items"].copy()
+            unknown = set(c["price_overrides"]) - set(items["product_id"].astype(str))
+            if unknown:
+                raise ValueError("변경 가격의 상품이 현재 선택 범위에 없습니다.")
+            new_price = items["product_id"].astype(str).map(c["price_overrides"])
+            delta = (new_price * items["quantity"] - items["sales_amount"]).where(new_price.notna(), 0)
+            delta = delta.groupby(items["order_id"]).sum().reindex(rows.index, fill_value=0)
+            rows.loc[target, "gross"] += delta[target]
+        else:
+            rows.loc[target, "gross"] += rows.loc[target, "selected_gross"] * c["price_change_pct"] / 100
         rows["discount"] = rows["discount"].clip(upper=rows["gross"])
         notes.append("가격 변경은 선택 상품의 관측 판매금액을 증감합니다. 기존 쿠폰 할인액은 유지하되 상품금액을 상한으로 둡니다.")
     elif policy == "discount":
