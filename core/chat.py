@@ -122,6 +122,59 @@ def show_answer(a: dict):
         st.caption(f"ℹ️ {_md(a['notice'])}")
 
 
+CAMPAIGN_ROWS = [("target", "누구에게"), ("action", "무엇을"), ("timing", "언제"), ("metric", "성과 확인")]
+
+
+def show_campaign(m, e: dict, key: str):
+    """캠페인 아이디어(가설) 카드 + Growth Lab 손익 비교로 넘기는 버튼."""
+    c = (e.get("answer") or {}).get("campaign")
+    if not c:
+        return
+    with st.container(border=True):
+        st.markdown(":violet-badge[캠페인 아이디어 · 가설]")
+        st.markdown("\n".join(f"- **{lab}** {_md(c[k])}" for k, lab in CAMPAIGN_ROWS if c.get(k)))
+        if c["policy"] != "none":
+            st.button(f"Growth Lab에서 손익 보기 · {tools.S.POLICIES[c['policy']]}", key=f"camp_{key}",
+                      icon=":material/science:", on_click=campaign_to_lab, args=(m, e), use_container_width=True,
+                      help="이 아이디어를 Growth Lab 정책 비교로 넘깁니다. 주문 수 변화는 0%(그대로)로 시작하니 "
+                           "Growth Lab에서 가정을 바꿔 보세요.")
+        else:
+            st.caption("Growth Lab 정책 비교로 계산할 수 없는 아이디어예요(노출·테마 변경 등). 실험으로 효과를 확인해야 해요.")
+
+
+def campaign_policy(m, e: dict) -> dict:
+    """캠페인 아이디어 → simulate_policy 입력. 기간·고객 조건은 그 답변의 분석 그대로, 주문 변화는 0%(가정 없음)."""
+    c = e["answer"]["campaign"]
+    spec = popup.spec_from_calls(e.get("calls")) or {}
+    cur = spec.get("cur") or (pd.Timestamp("2026-09-01"), pd.Timestamp("2026-10-01"))
+    v = float(c["policy_value"] or 0)
+    config = {"discount": {"policy": "discount", "discount_type": "rate", "discount_value": max(v, 0)},
+              "price": {"policy": "price", "price_change_pct": v},
+              "benefit": {"policy": "benefit", "benefit_amount": max(v, 0)},
+              "bundle": {"policy": "bundle", "bundle_discount_pct": max(v, 0)}}[c["policy"]]
+    scope = {}
+    prod = m["raw"]["product"].drop_duplicates("product_name").set_index("product_name")["product_id"]
+    ids = [str(prod[p]) for p in c.get("products", []) if p in prod.index]
+    cats = [x for x in c.get("categories", []) if x in set(m["raw"]["product"]["category"])]
+    if ids:
+        scope["product_ids"] = ids
+    elif cats:
+        scope["categories"] = cats
+    if spec.get("filters"):
+        scope["filters"] = spec["filters"]
+    return {"start": f"{cur[0]:%Y-%m-%d}", "end": f"{cur[1]:%Y-%m-%d}", "policy_config": config,
+            **({"simulation_scope": scope} if scope else {})}
+
+
+def campaign_to_lab(m, e: dict):
+    try:
+        res = tools.run(m, "simulate_policy", **campaign_policy(m, e))
+    except Exception as ex:  # noqa: BLE001
+        st.session_state.camp_error = f"Growth Lab으로 넘기지 못했습니다: {ex}"
+        return
+    open_simulation(res["simulation"])
+
+
 def ask_next(q: str):
     st.session_state.pending_q = q
 
@@ -263,6 +316,7 @@ def render(m):
                 with st.chat_message("assistant"):
                     if e.get("answer"):
                         show_answer(e["answer"])
+                        show_campaign(m, e, key=str(i))
                     elif e.get("a"):
                         st.markdown(str(e["a"]).replace("~", "\\~"))   # '9-21~9-27'이 취소선이 되지 않게
                     if e.get("unverified"):
@@ -285,7 +339,7 @@ def render(m):
                                 st.session_state.pending_q = llm.with_period(e["q"], lab)
                                 st.rerun()
                     if e is log[-1] and (e.get("answer") or {}).get("next_questions"):
-                        st.caption("이어서 물어보기")
+                        st.caption("먼저 확인해 볼 것" if (e.get("answer") or {}).get("campaign") else "이어서 물어보기")
                         for j, nq in enumerate(e["answer"]["next_questions"]):
                             st.button(nq, key=f"next_{i}_{j}", icon=":material/subdirectory_arrow_right:",
                                       on_click=ask_next, args=(nq,), use_container_width=True)
@@ -294,6 +348,8 @@ def render(m):
                             st.caption(f"사용한 분석: {' · '.join(e['tools'])} · 모델 {e['model']}"
                                        + (f" · {e['usage']}" if e.get("usage") else ""))
 
+        if st.session_state.get("camp_error"):
+            st.warning(st.session_state.pop("camp_error"))
         q = st.chat_input("무엇이든 물어보세요", key="chat_q") or st.session_state.pop("pending_q", None)
         if q:
             hit = next((ex for ex in tools.EXAMPLES if ex[0].replace(" ", "") == q.replace(" ", "")), None)

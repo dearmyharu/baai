@@ -96,6 +96,11 @@ SYSTEM = """너는 식품 이커머스 회사의 'AI 분석가'다. 데이터 �
 
 # 질문 답변의 칸 (결정 2026-11-06): 모델은 칸만 채우고 화면 모양은 코드(core/chat.py)가 정한다.
 # OpenAI는 JSON schema로 강제, Gemini는 지시만(JSON이 아니면 글 그대로 보여 준다).
+# 캠페인 아이디어 (결정 2026-11-10): 답변이 실무자의 캠페인 기획으로 이어지게. 항상 가설이고, 숫자는 계산하지 않는다.
+# '무엇을'은 이 쇼핑몰 데이터·Growth Lab 정책 시뮬레이터로 다룰 수 있는 수단만(광고·유입 채널은 데이터에 없음).
+CAMPAIGN_DESC = ("캠페인 아이디어(가설). 변화·차이·문제가 보이는 답에만 채운다. 단순 조회, 데이터에 없는 질문, "
+                 "정책 시뮬레이션 답변에는 target을 빈 문자열로 둔다. 도구 결과의 고객층·상품·시간대만 쓰고 "
+                 "효과(매출이 몇 % 늘 것) 같은 숫자는 만들지 않는다")
 ANSWER_SCHEMA = {"type": "object", "properties": {
     "conclusion": {"type": "string", "description": "질문에 대한 답 한 문장(50자 이내). 기준 기간 포함. 조건이 있으면 대상도. "
                                                     "항목·숫자를 나열하지 않는다(나열은 evidence에). "
@@ -107,13 +112,28 @@ ANSWER_SCHEMA = {"type": "object", "properties": {
     "notice": {"type": "string", "description": "꼭 알릴 기준·주의 한 문장(표본 부족, '신규 고객 = 첫 구매' 같은 기준, 출생연도 기준, "
                                                 "대체 지표 안내). 없으면 빈 문자열"},
     "next_questions": {"type": "array", "items": {"type": "string"},
-                       "description": "이어서 물어볼 만한 질문 1~2개(25자 안팎, 실무자 말투, 지금 데이터로 답할 수 있는 것)"},
+                       "description": "이어서 물어볼 만한 질문 1~2개(25자 안팎, 실무자 말투, 지금 데이터로 답할 수 있는 것). "
+                                      "캠페인 아이디어가 있고 원인을 아직 모르면 '먼저 확인할 것'(어느 고객층·시간대에서 생긴 변화인지)을 묻는 질문"},
+    "campaign": {"type": "object", "description": CAMPAIGN_DESC, "properties": {
+        "target": {"type": "string", "description": "누구에게: 도구 결과에 나온 고객층·상품 구매자. 캠페인이 맞지 않으면 빈 문자열"},
+        "action": {"type": "string", "description": "무엇을: 쿠폰·가격·적립/사은품·묶음 할인·큐레이션 테마/노출 위치 중에서"},
+        "timing": {"type": "string", "description": "언제: 도구 결과에 요일·시간대 근거가 있을 때만. 없으면 빈 문자열"},
+        "metric": {"type": "string", "description": "성과 확인: 주 지표 하나 + 짝 지표 하나(예: 대상 고객 재구매율, 짝 지표 객단가)"},
+        "policy": {"type": "string", "enum": ["none", "discount", "price", "benefit", "bundle"],
+                   "description": "Growth Lab 손익 비교로 넘길 정책. 쿠폰=discount, 가격=price, 적립·사은품=benefit, 묶음=bundle, 그 밖=none"},
+        "policy_value": {"type": "number", "description": "정책 값: discount=할인율 %, price=가격 변화율 %(내리면 음수), "
+                                                          "benefit=주문당 혜택 원, bundle=묶음 추가 할인 %. none이면 0"},
+        "categories": {"type": "array", "items": {"type": "string"}, "description": "적용 카테고리(도구 결과에 나온 이름 그대로). 없으면 빈 배열"},
+        "products": {"type": "array", "items": {"type": "string"}, "description": "적용 상품명(도구 결과에 나온 이름 그대로, 최대 5개). 없으면 빈 배열"},
+    }},
 }}
 ANSWER_FORMAT = """
 [답변 칸]
 최종 답변은 conclusion, evidence, hypothesis, notice, next_questions 칸을 채운 JSON 하나로만 낸다(다른 글 없이).
 결론은 질문에 대한 답 한 문장(50자 이내, 나열 금지), 근거는 숫자 최대 3개, 가설·주의는 필요할 때만 한 문장씩.
 기간은 '9/21~9/27'처럼 쓴다.
+campaign: 실무자가 바로 기획할 수 있게 '누구에게·무엇을·언제·성과 확인'을 짧게(각 30자 안팎). 변화·차이·문제가
+보이는 답에만 채우고, 아니면 target을 비운다. 효과 크기는 예측하지 않는다(Growth Lab에서 가정을 넣어 손익을 본다).
 """
 
 
@@ -145,9 +165,20 @@ def parse_answer(text: str) -> dict | None:
     if not isinstance(d, dict) or not str(d.get("conclusion", "")).strip():
         return None
     lst = lambda v: [clean(str(x)) for x in (v if isinstance(v, list) else [v] if v else []) if str(x).strip()]
-    return {"conclusion": clean(str(d.get("conclusion", ""))), "evidence": lst(d.get("evidence"))[:3],
-            "hypothesis": clean(str(d.get("hypothesis") or "")), "notice": clean(str(d.get("notice") or "")),
-            "next_questions": lst(d.get("next_questions"))[:2]}
+    out = {"conclusion": clean(str(d.get("conclusion", ""))), "evidence": lst(d.get("evidence"))[:3],
+           "hypothesis": clean(str(d.get("hypothesis") or "")), "notice": clean(str(d.get("notice") or "")),
+           "next_questions": lst(d.get("next_questions"))[:2]}
+    c = d.get("campaign") if isinstance(d.get("campaign"), dict) else {}
+    if str(c.get("target") or "").strip() and str(c.get("action") or "").strip():
+        try:
+            value = float(c.get("policy_value") or 0)
+        except (TypeError, ValueError):
+            value = 0.0
+        policy = c.get("policy") if c.get("policy") in ("discount", "price", "benefit", "bundle") else "none"
+        out["campaign"] = {k: clean(str(c.get(k) or "")) for k in ("target", "action", "timing", "metric")} | {
+            "policy": policy, "policy_value": value,
+            "categories": lst(c.get("categories"))[:5], "products": lst(c.get("products"))[:5]}
+    return out
 
 
 # 도구 입력값의 형식 (Gemini function declaration, OpenAPI 스키마)
@@ -651,6 +682,7 @@ def ask(key: str, question: str, run_tool: Callable[[str, dict], dict], history:
         simulations = [c["result"]["simulation"] for c in r.get("calls", [])
                        if c.get("result", {}).get("simulation")]
         if simulations:
+            a.pop("campaign", None)      # 정책 시뮬레이션 답변에는 캠페인 아이디어를 붙이지 않는다
             payload = simulations[-1]
             config = payload["scenarios"][0]
             a["notice"] = T.S.assumption_text(config) + " " + a.get("notice", "")
