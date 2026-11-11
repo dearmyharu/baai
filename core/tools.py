@@ -233,7 +233,7 @@ def analyze(m, start, end, measure="매출", dims=None, sort="높은순", n=10, 
         if metric == "매출":
             metric = "상품매출"
             notes.append("상품·카테고리별 매출은 상품매출(쿠폰 차감 후 상품금액, 배송비 제외)로 계산")
-        if metric in ("객단가", "방문수", "구매전환율", "장바구니율"):
+        if metric in ("객단가", "방문수", "구매전환율", "장바구니율", "장바구니구매전환율"):
             raise ValueError(f"{metric}은(는) 상품·카테고리별로 나눌 수 없습니다. 상품매출·판매수량·주문수·구매고객수를 쓰세요.")
     unit = A.SLICE_METRICS[metric][0]
     bad = [b for b in by if unit not in A.SLICE_DIMS[b][1] and not (b in ITEM_ONLY)]
@@ -631,7 +631,7 @@ _TOOL_LIST = [
     Tool("analyze", "조립형 분석: 지표(measure)를 기준(dims, 1~2개)별로 나눠 보고, 필요하면 직전 기간과 비교. 다른 전용 도구가 "
          "딱 맞지 않는 '무엇을 × 무엇별로' 질문에 쓴다. 예: 요일별·시간대별·평일/주말 매출, 성별·연령대·지역·가입경로·등급별 "
          "구매 고객 수나 객단가, 신규/재방문·경로·테마별 구매전환율, 카테고리×성별 상품매출, 요일×시간대 주문 수, "
-         "지난주보다 줄어든 지역(sort=감소순). 방문 지표(방문수·구매전환율·장바구니율)는 상품·카테고리·첫구매기존으로 못 나눈다",
+         "지난주보다 줄어든 지역(sort=감소순), 신규/재방문별 장바구니→구매 전환율(measure=장바구니구매전환율, dims=[신규재방문]). 방문 지표(방문수·구매전환율·장바구니율·장바구니구매전환율)는 상품·카테고리·첫구매기존으로 못 나눈다",
          PERIOD | {"measure": "지표", "dims": "기준 1~2개", "sort": "높은순 | 낮은순 | 감소순 | 증가순", "n": "개수",
                    "compare": "직전 기간과 비교"}, analyze, []),
     Tool("explain_revenue_change", "직전 기간 대비 완료 매출 변화를 주문 수 효과와 객단가 효과로 분해하고 함께 달라진 지표 제시",
@@ -701,4 +701,5 @@ EXAMPLES = [
     ("지난주에 2주 전보다 매출이 빠진 상품 보여줘", "compare_items", dict(start="2026-09-21", end="2026-09-28")),
     ("이번 달 요일·시간대별 주문 수는?", "analyze", dict(start=SEP[0], end=SEP[1], measure="주문수", dims=["요일", "시간대"])),
     ("신규 방문이랑 재방문 중 구매전환율이 높은 쪽은?", "analyze", dict(start=SEP[0], end=SEP[1], measure="구매전환율", dims=["신규재방문"])),
+    ("장바구니→구매 전환율을 신규 방문·재방문으로 나눠 지난달과 비교하면?", "analyze", dict(start=SEP[0], end=SEP[1], measure="장바구니구매전환율", dims=["신규재방문"], compare=True)),
 ]
