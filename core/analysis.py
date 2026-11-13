@@ -40,6 +40,7 @@ SLICE_METRICS = {
     "방문수": ("session", "count", "방문 세션 수(로그인 고객)"),
     "구매전환율": ("session", "rate", "세션 구매 전환율(구매 세션 ÷ 방문 세션)"),
     "장바구니율": ("session", "rate", "장바구니 담기율(장바구니 담은 세션 ÷ 방문 세션)"),
+    "장바구니구매전환율": ("session", "rate", "장바구니→구매 전환율(상품 클릭 후 장바구니에 담은 세션 중 구매한 세션 비율, 구매 퍼널과 같은 기준)"),
 }
 # 기준: 표시 이름, 쓸 수 있는 단위, 순서가 있는 기준이면 순서
 SLICE_DIMS = {
@@ -137,6 +138,10 @@ def slice_metric(m: dict, start, end, metric: str, dims: list[str]) -> pd.DataFr
         out = g.agg(값=("has_purchase", "mean"), 표본=("session_id", "size"))
     elif metric == "장바구니율":
         out = g.agg(값=("has_cart", "mean"), 표본=("session_id", "size"))
+    elif metric == "장바구니구매전환율":
+        # 구매 퍼널(metrics.step_masks, ALL)과 같은 분모: 상품 클릭 + 장바구니까지 간 세션
+        cart = df[df["has_product_click"] & df["has_cart"]]
+        out = cart.groupby(dims, dropna=False, observed=True).agg(값=("has_purchase", "mean"), 표본=("session_id", "size"))
     else:
         raise ValueError(f"모르는 지표: {metric}")
     return out.reset_index()
