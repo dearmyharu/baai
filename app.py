@@ -22,7 +22,7 @@ st.markdown("""
 
 pages = {
     "오늘": [
-        st.Page("views/home.py", title="아침 브리핑", icon=":material/wb_sunny:", default=True),
+        st.Page("views/home.py", title="일일 브리핑", icon=":material/today:", default=True),
     ],
     "분석": [
         st.Page("views/overview.py", title="통합 현황", icon=":material/dashboard:"),

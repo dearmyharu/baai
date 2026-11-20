@@ -1,4 +1,4 @@
-"""아침 브리핑 할 일 기준값 확인: 9월을 하루씩 돌려 하루에 할 일이 몇 개 나오는지 센다.
+"""일일 브리핑 확인 사항 기준값 확인: 9월을 하루씩 돌려 하루에 할 일이 몇 개 나오는지 센다.
 
 실행 (dashboard 폴더에서):  python -m eval.briefing_tune
 기준값을 바꿔 보려면:        python -m eval.briefing_tune drop_pct=0.4 spike_x=4

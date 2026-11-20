@@ -1,4 +1,4 @@
-"""아침 브리핑 규칙 테스트 (합성 데이터). python -m unittest eval.test_briefing -v"""
+"""일일 브리핑 규칙 테스트 (합성 데이터). python -m unittest eval.test_briefing -v"""
 import unittest
 
 import numpy as np
@@ -79,7 +79,7 @@ class BriefingTests(unittest.TestCase):
         top = self.b["todos"][0]
         self.assertEqual(top["kind"], "spike")
         self.assertIn("콜드브루", top["title"])
-        self.assertEqual(top["profile"]["guess"], "바이럴·외부 소개 가능성")
+        self.assertEqual(top["profile"]["guess"], "바이럴·외부 유입")
 
     def test_category_drop_found(self):
         keys = {x["key"] for x in B.todos(self.m, DAY, {"max_items": 99})}
@@ -114,7 +114,8 @@ class BriefingTests(unittest.TestCase):
         self.assertIsNotNone(p["chg"])
 
     def test_summary_sentence(self):
-        self.assertIn("어제(화) 매출은", self.b["summary"])
+        self.assertIn("전일(화) 매출은", self.b["summary"])
+        self.assertNotIn("어요", self.b["summary"])
 
 
 if __name__ == "__main__":
