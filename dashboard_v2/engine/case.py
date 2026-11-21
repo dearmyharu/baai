@@ -20,7 +20,7 @@ MIN_SALE_DAYS = 0.6               # 실험 가능: 최근 28일 중 60% 이상 �
 LEVERS = {
     "price": {"label": "판매가 할인", "unit": "%", "choices": [5, 10, 15]},
     "discount": {"label": "주문 쿠폰(정률)", "unit": "%", "choices": [5, 10]},
-    "shipping": {"label": "무료배송 기준 낮추기", "unit": "원", "choices": [30000, 20000]},
+    "shipping": {"label": "무료배송 기준 낮추기", "unit": "원", "choices": [20000, 10000]},   # 현재 기준 30,000원
     "bundle": {"label": "묶음 할인", "unit": "%", "choices": [5, 10]},
 }
 
@@ -222,7 +222,7 @@ def missing_question(case: dict, m: dict, today, checks: list[dict]) -> dict | N
                 "choices": [{"label": c, "set": {"target": {"type": "category", "value": c}}}
                             for c in declining_categories(m, today)]}
     if not ok["가설"]:
-        opts = [("price", 5), ("price", 10), ("discount", 5), ("bundle", 5), ("shipping", 30000)]
+        opts = [("price", 5), ("price", 10), ("discount", 5), ("bundle", 5), ("shipping", 20000)]
         choices = [{"label": lever_text({"policy": p, "value": v}), "set": {"lever": {"policy": p, "value": v}}}
                    for p, v in opts]
         return {"step": "가설", "text": f"{target_text(case['target'])}에 어떤 수단을 쓸지 선택해 주십시오. "
