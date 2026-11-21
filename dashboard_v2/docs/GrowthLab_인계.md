@@ -15,7 +15,7 @@
 - 임시 화면의 세 가지 모드: `lab_request` 없음 → 등록된 프로모션 목록 / `type=plan` → 수단 조정·본전·이익 확률·확인 기간·실행 계획 등록 / `type=lab` → 프로모션 결과
 - 확인: 세 모드 모두 화면 오류 없음(테스트 도구). '실행 계획 등록' 버튼은 데이터 파일을 바꾸므로 시험하지 않았습니다.
 - 바꿀 파일: `views/growth_lab.py`(화면). 계산을 바꿔야 하면 `engine/growth.py`를 고치되 함수 이름·반환 형식은 유지해 주세요.
-- 챗봇 연결(예정): Growth Lab 화면이 현재 값을 `st.session_state["growth_context"]`에 넣으면 오른쪽 챗봇이 참고해 답합니다. 챗봇이 제안한 수단·값은 `st.session_state["lab_suggestion"]`에 남고, 이를 입력칸에 반영하는 버튼은 화면 구성이 정해진 뒤에 만듭니다.
+- 챗봇 연결(동작함): Growth Lab 화면이 현재 값을 `st.session_state["growth_context"]`에 넣으면 오른쪽 챗봇이 참고해 답합니다. 챗봇이 제안한 수단·값은 `st.session_state["lab_suggestion"]`에 남고, 이를 입력칸에 반영하는 버튼은 화면 구성이 정해진 뒤에 만듭니다.
 
 ## 1. Growth Lab의 역할
 
@@ -49,10 +49,10 @@ Growth Lab은 챗봇이 찾은 대상·수단을 받아 다음 네 가지를 보
 ```python
 {"type": "lab", "label": "Growth Lab 결과 보기", "promotion_id": "PR003"}
 ```
-→ 해당 프로모션의 계획 대비 결과를 보여 줍니다. 계산은 `briefing.promo_status(m, day)`에서 같은 ID를 찾아 쓰면 됩니다(기준일은 `st.session_state["today"]` − 1일).
+→ 해당 프로모션의 계획 대비 결과를 보여 줍니다. 계산은 `briefing.promo_status(m, day)`에서 같은 ID를 찾아 쓰면 됩니다(day = `data.TODAY` − 1일, 기준일은 10/26 아침으로 고정).
 
 ### 3-2. 챗봇에서: 새 계획 만들기 (2026-11-21 구현, 지금 동작함)
-AI 분석가 오른쪽 '분석 진행'에서 다섯 조건이 모두 채워지면 'Growth Lab에서 계획 세우기' 버튼이 생기고, 아래 형식으로 보냅니다. 만드는 코드: `engine/case.py`의 `lab_request`.
+오른쪽 AI 분석가 패널의 '분석 진행' 다섯 조건이 모두 채워지면 패널에 'Growth Lab에서 계획 세우기' 버튼이 생기고, 아래 형식으로 보냅니다. 만드는 코드: `engine/case.py`의 `lab_request`.
 ```python
 {
   "type": "plan",
@@ -76,7 +76,7 @@ AI 분석가 오른쪽 '분석 진행'에서 다섯 조건이 모두 채워지�
 ```
 - 빈 칸이 있는 요청은 오지 않습니다(조건 확인은 코드가 함).
 - 수단 값은 사용자가 고른 기본 선택지(판매가 5·10%, 쿠폰 5%, 묶음 5%, 무료배송 3만 원)이거나 대화 중 손익 계산에 쓴 값입니다. Growth Lab에서 바꿀 수 있게 하는 것을 권합니다.
-- 시험 방법: AI 분석가에서 아침 브리핑의 '원인 분석' 버튼으로 시작 → 오른쪽에서 수단 선택 → 'Growth Lab에서 계획 세우기'.
+- 시험 방법: 아침 브리핑의 'AI 분석가 원인 분석' 버튼 → 오른쪽 패널에서 수단 선택 → 'Growth Lab에서 계획 세우기'.
 
 ## 4. Growth Lab이 남기는 것 (출력)
 
@@ -125,7 +125,7 @@ AI 분석가 오른쪽 '분석 진행'에서 다섯 조건이 모두 채워지�
 
 - Growth Lab 담당: `views/growth_lab.py`, `engine/growth.py`(새 파일)
 - 같이 쓰는 파일(고칠 때 알려 주기): `engine/briefing.py`, `engine/data.py`, `data/*.csv`, `db/schema.sql`, `app.py`
-- 챗봇 담당: `views/chat.py`, 챗봇 관련 `engine/` 파일
+- 챗봇 담당: `engine/chat_panel.py`(오른쪽 패널), `engine/popup.py`(질문 대시보드), `engine/case.py`·`llm.py`·`tools.py`
 
 ## 8. 실행·데이터 정보
 

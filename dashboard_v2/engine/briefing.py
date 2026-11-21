@@ -418,10 +418,10 @@ def todos(m: dict, day: pd.Timestamp, th: dict | None = None, ship_cost: float =
 
 def _promo_context(items: list[dict], promos: list[dict], day: pd.Timestamp, it: pd.DataFrame) -> list[dict]:
     """프로모션 대상의 변화는 프로모션 점검에서 다루므로 일반 항목에서 뺀다.
-    종료 7일 이내의 감소는 남기되 '종료 직후'임을 이유에 적는다."""
+    종료 14일 이내의 감소는 남기되 '종료 직후'임을 이유에 적는다(결정 2026-11-21)."""
     cat_of = it.drop_duplicates("product_name").set_index("product_name")["category"].to_dict()
     running = {p["category"] for p in promos if p["phase"] == "진행 중"}
-    recent = {p["category"]: p for p in promos if p["phase"] == "종료" and 0 < (day - p["end"]).days <= 7}
+    recent = {p["category"]: p for p in promos if p["phase"] == "종료" and 0 < (day - p["end"]).days <= 14}
     out = []
     for x in items:
         kind, _, name = x["key"].partition(":")
