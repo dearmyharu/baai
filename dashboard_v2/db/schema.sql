@@ -137,6 +137,12 @@ CREATE TABLE IF NOT EXISTS promotion (
     category        text,
     lever           text,
     discount_pct    numeric,
+    discount_type  text,
+    discount_value numeric,
+    shipping_threshold numeric,
+    order_response_low_pct numeric,
+    order_response_mode_pct numeric,
+    order_response_high_pct numeric,
     start_date      date,
     end_date        date,
     primary_metric  text,
@@ -150,3 +156,12 @@ CREATE INDEX IF NOT EXISTS idx_orders_time ON orders(order_time);
 CREATE INDEX IF NOT EXISTS idx_items_order ON order_items(order_id);
 CREATE INDEX IF NOT EXISTS idx_event_time ON event_log(event_time);
 CREATE INDEX IF NOT EXISTS idx_event_session ON event_log(session_id);
+
+-- Existing installations: CREATE TABLE IF NOT EXISTS does not add columns.
+-- Safe to re-run during the Growth Lab upgrade.
+ALTER TABLE promotion ADD COLUMN IF NOT EXISTS discount_type text;
+ALTER TABLE promotion ADD COLUMN IF NOT EXISTS discount_value numeric;
+ALTER TABLE promotion ADD COLUMN IF NOT EXISTS shipping_threshold numeric;
+ALTER TABLE promotion ADD COLUMN IF NOT EXISTS order_response_low_pct numeric;
+ALTER TABLE promotion ADD COLUMN IF NOT EXISTS order_response_mode_pct numeric;
+ALTER TABLE promotion ADD COLUMN IF NOT EXISTS order_response_high_pct numeric;
