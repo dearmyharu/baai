@@ -22,7 +22,9 @@ def fake_prepared():
         "target": [True] * 4,
     }, index=pd.Index(ids, name="order_id"))
     selected = pd.DataFrame({
-        "order_id": ids, "allocated_coupon_discount": [0., 0., 1000., 0.]
+        "order_id": ids, "allocated_coupon_discount": [0., 0., 1000., 0.],
+        "quantity": [1, 1, 1, 1],
+        "cost_price": [9000., 9000., 10000., 21000.]
     })
     return {"ledger": led, "selected_items": selected, "scope": {"categories": ["정육"]},
             "costs": {"shipping_per_order": 3000., "fee_pct": 0., "other_per_order": 0.},
