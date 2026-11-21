@@ -79,8 +79,17 @@ def _load_env():
 
 
 def backend_name() -> str:
+    """csv 또는 db. DATA_BACKEND가 없으면: data 폴더에 CSV가 있으면 csv, 없고 DB 접속 정보가 있으면 db."""
     _load_env()
-    return os.getenv("DATA_BACKEND", "csv").lower()
+    b = os.getenv("DATA_BACKEND", "").strip().lower()
+    if b:
+        return b
+    d = Path(os.getenv("DATA_DIR") or DEFAULT_DATA_DIR)
+    if not (d / "orders.csv").exists():
+        from .db import has_db_config
+        if has_db_config():
+            return "db"
+    return "csv"
 
 
 OPTIONAL = {"promotion": ["promotion_id", "promotion_name", "category", "lever", "discount_pct", "start_date",
@@ -114,6 +123,11 @@ def load_raw(data_dir: str | os.PathLike | None = None) -> dict[str, pd.DataFram
     else:
         _load_env()
         d = Path(data_dir or os.getenv("DATA_DIR") or DEFAULT_DATA_DIR)
+        if not (d / "orders.csv").exists():
+            raise FileNotFoundError(
+                f"데이터를 찾지 못했습니다. PC에서는 {d} 폴더에 CSV가 있어야 하고, "
+                "배포(Streamlit Cloud)에서는 Secrets에 DATA_BACKEND = \"db\"와 DB 접속 정보"
+                "(DB_HOST·DB_USER·DB_PASSWORD 또는 DATABASE_URL)가 있어야 합니다.")
         raw = _read_csv_tables(d)
     for t, cols in DATETIME_COLS.items():
         for c in cols:
