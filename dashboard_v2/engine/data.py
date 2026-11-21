@@ -64,8 +64,9 @@ def as_of(m: dict, today) -> dict:
     raw["order_coupon"] = raw["order_coupon"][raw["order_coupon"]["order_id"].isin(ids)]
     raw["event_log"] = raw["event_log"][raw["event_log"]["event_time"] < t]
     raw["customer_grade_history"] = raw["customer_grade_history"][raw["customer_grade_history"]["effective_from"] < t]
-    if "promotion" in raw:
-        raw["promotion"] = raw["promotion"][raw["promotion"]["start_date"] < t]
+    # Plans are known at registration time even when their start_date is in the
+    # future. Keep promotion metadata visible in the Growth Lab plan list;
+    # briefing.promo_status itself ignores campaigns not yet started.
     return {"raw": raw, "sessions": m["sessions"][m["sessions"]["start"] < t],
             "orders": m["orders"][m["orders"]["order_time"] < t],
             "items": m["items"][m["items"]["order_time"] < t], "as_of": t}
