@@ -4,6 +4,7 @@ on:
   push:
     paths:
       - "dashboard_v2/**"
+      - "app.py"
       - ".github/workflows/growth-lab-check.yml"
   workflow_dispatch:
 
@@ -21,6 +22,6 @@ jobs:
       - name: Install requirements
         run: python -m pip install -r requirements.txt
       - name: Compile sources
-        run: python -m compileall -q app.py engine views tests
+        run: python -m compileall -q ../app.py app.py engine views tests
       - name: Test category promo rules
         run: python -m unittest discover -s tests -p 'test_growth_policy.py' -v
