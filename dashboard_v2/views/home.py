@@ -11,7 +11,9 @@ from engine import briefing as B
 from engine import ui
 
 # ---------------- 기준일 (app.py 사이드바에서 정함) ----------------
-today = pd.Timestamp(st.session_state.get("today", pd.Timestamp("2026-10-22")))
+from engine import data as D  # noqa: E402
+
+today = D.TODAY
 day = today - pd.Timedelta(days=1)
 
 
@@ -22,6 +24,12 @@ def _brief(day_str: str):
 
 b = _brief(f"{day:%Y-%m-%d}")
 y, pace, mv = b["yesterday"], b["pace"], b["movers"]
+st.session_state["page_context"] = (
+    "아침 브리핑 화면을 보고 있음. " + b["summary"]
+    + " 프로모션 점검: " + "; ".join(f"{p['name']}({ui.md(p['start'])}~{ui.md(p['end'])}, {p['phase']}, 판정 {p['status']}, "
+                                    f"대상 일평균 매출 {p['sales_chg']:+.0%}, 이익률 {p['margin_pre']:.1%}→{p['margin_dur']:.1%})"
+                                    for p in b["promos"])
+    + " 금일 확인 사항: " + "; ".join(x["title"] for x in b["todos"]))
 LEVEL_COLOR = {"평소 대비 낮음": ui.C_DOWN, "평소 대비 높음": ui.C_UP}
 
 st.title(f"{today.month}월 {today.day}일 ({B.DOW[today.dayofweek]}) 아침 브리핑")
@@ -68,7 +76,7 @@ with right:
         tooltip=[alt.Tooltip("날짜:N"), alt.Tooltip("revenue:Q", title="매출", format=",.0f"),
                  alt.Tooltip("profit:Q", title="이익", format=",.0f"), alt.Tooltip("orders:Q", title="주문 수")])
     st.markdown("**최근 14일 매출**")
-    st.altair_chart(bars.properties(height=220), use_container_width=True)
+    st.altair_chart(bars.properties(height=220), width="stretch")
 
 # ---------------- 2. 월간 누적 ----------------
 st.subheader("월간 누적 실적")
@@ -88,7 +96,7 @@ with st.container(border=True):
         color=alt.Color("구분:N", scale=alt.Scale(domain=names, range=[ui.C_MAIN, ui.C_PREV][:len(names)]),
                         title=None),
         tooltip=["구분:N", "일:Q", alt.Tooltip("누적 매출:Q", format=",.0f")])
-    st.altair_chart(line.properties(height=230), use_container_width=True)
+    st.altair_chart(line.properties(height=230), width="stretch")
     st.caption(f"현 추세 기준 {pace['month']}월 예상 매출 약 {ui.won(pace['projection'])}"
                + (f" (지난달 실적 {ui.won(pace['prev_full'])})" if pace["prev_full"] else "")
                + " · 산식: 누적 일평균 × 이번 달 일수")
@@ -146,9 +154,9 @@ def _seed(key: str):
 
 
 def _ask(q: str, key: str = ""):
-    st.session_state.pending_question = q
+    st.session_state.pending_question = q          # 오른쪽 AI 분석가 패널이 받아서 바로 답한다
     st.session_state.pending_seed = _seed(key)
-    st.session_state.goto = "chat"
+    st.session_state.chat_open = True
 
 
 def _lab(action: dict):
@@ -173,9 +181,9 @@ for i, x in enumerate(b["todos"], 1):
             for j, act in enumerate(x["actions"]):
                 if act["type"] == "ask":
                     st.button(act["label"], key=f"todo_{i}_{j}", on_click=_ask, args=(act["q"], x["key"]),
-                              use_container_width=True, help=act["q"])
+                              width="stretch", help=act["q"])
                 elif act["type"] == "lab":
                     st.button(act["label"], key=f"todo_{i}_{j}", on_click=_lab, args=(act,),
-                              use_container_width=True)
+                              width="stretch")
 st.caption("선정 기준: 프로모션 판정을 먼저, 그다음 전일 급변, 그다음 최근 3일 변화의 금액 영향 순. 최대 4건. "
            "진행 중인 프로모션 대상 카테고리의 변화는 프로모션 점검에서 따로 봅니다.")

@@ -24,6 +24,11 @@ python dashboard_v2/pipeline/extend_october.py --gen ecommerce_generation_bluepr
 1. Supabase 새 프로젝트 → Database 연결 문자열(URI) 복사
 2. `set DATABASE_URL=<연결 문자열>` (Windows) 후 `python dashboard_v2/db/upload_to_supabase.py`
 
+## 화면 구성 (2026-11-21)
+- 기준일: 2026-10-26(월) 아침 고정, 데이터는 10/25까지(`engine/data.py` TODAY)
+- 왼쪽 메뉴: 아침 브리핑 / 분석 4화면(ver.1에서 가져옴: 통합 현황, 상품·큐레이션, 고객 여정·전환, 고객·리텐션) / Growth Lab(임시본, 팀원이 개편)
+- 오른쪽: AI 분석가 패널(`engine/chat_panel.py`). 답변의 분석은 왼쪽에 질문 대시보드로 띄움(`engine/popup.py`). 지금 보는 화면의 요약을 함께 받아 답함
+
 ## 실행
 - PC: `run.bat` 더블클릭 (dashboard_test/.venv 사용). AI 키는 `.streamlit/secrets.toml`의 OPENAI_API_KEY
 - 데이터: 기본은 `data/` 폴더의 CSV. 저장소에는 올리지 않습니다(공개 저장소).

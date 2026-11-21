@@ -42,8 +42,10 @@ DATETIME_COLS = {
     "promotion": ["start_date", "end_date"],
 }
 
-# 화면의 기준일(오늘). 챗봇·도구는 이 날짜 이전 데이터만 본다(미포함). set_cutoff로 바꾼다.
-CUTOFF = PERIOD_END
+# 화면의 기준일(오늘) = 2026-10-26(월) 아침으로 고정(결정 2026-11-21). 데이터는 10/25까지만 쓴다.
+# 10월 프로모션 3건이 진행 중·종료가 함께 보이는 날. 모든 화면·챗봇·도구가 이 날짜 이전 데이터만 본다.
+TODAY = pd.Timestamp("2026-10-26")
+CUTOFF = TODAY
 
 
 def set_cutoff(today) -> None:
