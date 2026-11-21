@@ -86,6 +86,26 @@ def replay(m: dict, category: str, lever: dict, start, end) -> dict:
     changed["discount"] = np.minimum(changed["discount"], changed["gross"])
     before = _financial_rows(original)
     after = _financial_rows(changed)
+
+    # Same category-level margin definition as briefing.ledger():
+    # category net product sales, less category COGS and its proportional
+    # share of order shipping burden (shipping cost minus customer fee).
+    selected_cost = selected.assign(
+        item_cost=selected["quantity"] * selected["cost_price"]
+    ).groupby("order_id")["item_cost"].sum().reindex(original.index, fill_value=0)
+    selected_net_before = (selected_gross - existing_category_coupon).clip(lower=0)
+    if lever["policy"] == "price":
+        selected_net_after = (selected_gross * (1 - lever["value"] / 100)).clip(lower=0)
+    elif lever["policy"] == "discount":
+        selected_net_after = (selected_gross - new_coupon).clip(lower=0)
+    else:
+        selected_net_after = selected_net_before.copy()
+    for values, selected_net in ((before, selected_net_before), (after, selected_net_after)):
+        net = (values["gross"] - values["discount"]).replace(0, np.nan)
+        share = (selected_net / net).fillna(0).clip(0, 1)
+        burden = B.SHIP_COST - values["shipping_income"]
+        values["category_revenue"] = selected_net
+        values["category_profit"] = selected_net - selected_cost - share * burden
     if (after[["revenue", "gross", "discount"]].lt(-0.001)).any().any():
         raise ValueError("정책 적용 후 상품 또는 결제금액이 음수가 되었습니다.")
     return {"before": before, "after": after, "lever": lever,
@@ -93,10 +113,11 @@ def replay(m: dict, category: str, lever: dict, start, end) -> dict:
 
 
 def totals(rows: pd.DataFrame) -> dict:
-    return {name: float(rows[name].sum()) for name in
-            ("gross", "discount", "shipping_income", "revenue", "profit", "product_cost")} | {
-                "orders": int(len(rows)), "margin": float(rows["profit"].sum()/rows["revenue"].sum())
-                if rows["revenue"].sum() else 0.0}
+    # Main KPI scope: selected-category product sales and shipping-adjusted profit.
+    revenue = float(rows["category_revenue"].sum())
+    profit = float(rows["category_profit"].sum())
+    return {"revenue": revenue, "profit": profit,
+            "orders": int(len(rows)), "margin": profit / revenue if revenue else 0.0}
 
 
 def daily_pair(m: dict, pair: dict, start, end) -> tuple[pd.DataFrame, pd.DataFrame]:
@@ -108,7 +129,8 @@ def daily_pair(m: dict, pair: dict, start, end) -> tuple[pd.DataFrame, pd.DataFr
     for key in ("before", "after"):
         rows = pair[key].copy()
         rows["date"] = order_dates.reindex(rows.index)
-        day = rows.groupby("date")[["revenue", "profit"]].sum()
+        day = rows.groupby("date")[["category_revenue", "category_profit"]].sum()
+        day = day.rename(columns={"category_revenue": "revenue", "category_profit": "profit"})
         result.append(day.reindex(calendar, fill_value=0.0).astype(float))
     return result[0], result[1]
 
@@ -132,7 +154,7 @@ def monte_carlo(m: dict, category: str, lever: dict, today, days: int,
     day-to-day variation twice. Basket count changes proportionally while the
     observed mix/price/cost of category-containing baskets remains stable.
     Percentile bands are conditional scenario ranges, not forecasts trained on
-    campaign response. Revenue includes whole category-containing baskets.
+    campaign response. Revenue is selected-category net product sales only; shipping burden is allocated proportionally as in Morning Briefing.
     """
     if not (-1 < low <= mode <= high) or high > 10:
         raise ValueError("주문 반응 기본 가정을 확인해 주십시오.")
