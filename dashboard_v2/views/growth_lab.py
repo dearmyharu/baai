@@ -181,8 +181,14 @@ def show_planner():
         s, e = G.base_period(today)
         pair = GP.replay(mart, category, normalized, s, e)
         be = GP.break_even(pair)
+        # Detection uses the resulting category sales change, NOT order growth:
+        # a 10% discount with 10% more orders need not increase sales.
+        expected_sales_change = (
+            (be["after"]["revenue"] / be["before"]["revenue"]) * (1 + assumed_response[1]) - 1
+            if be["before"]["revenue"] > 0 else 0.0
+        )
         detect = G.detect_days(mart, {"type": "category", "value": category},
-                               today, effect=assumed_response[1])
+                               today, effect=abs(expected_sales_change))
         suggested_days = (detect["days"] if detect["status"] == "확인 가능"
                           and detect["days"] is not None else 14)
         with st.expander("운영 기간 변경 (선택 사항)"):
@@ -212,7 +218,7 @@ def show_planner():
         c.metric("효과 확인 기간", f"{detect['days']}일", help=detect["note"])
     else:
         c.metric("효과 확인 기간", "산출 어려움", help=detect["note"])
-    c.caption(detect["status"] + " · 최대 28일 이내 평가 기준")
+    c.caption(f"매출 변화 가정 {expected_sales_change:+.1%} · {detect['status']}")
 
     with st.container(border=True):
         if be["required"] is None:
