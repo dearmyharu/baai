@@ -1,0 +1,8 @@
+.env
+.streamlit/secrets.toml
+__pycache__/
+*.pyc
+# 데이터·업로드 파일은 저장소에 올리지 않음(공개 저장소). 데이터는 Supabase 또는 PC의 data 폴더
+data/
+db/to_upload/
+*.zip
