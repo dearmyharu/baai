@@ -1,242 +1,294 @@
-"""Growth Lab: 해도 되는가(손익) · 확인할 수 있는가(기간) · 어떻게 실행하는가(계획).
+"""Growth Lab v2: category-first promotion planning and briefing result review.
 
-계산은 engine/growth.py, 판정은 engine/briefing.promo_status. 이 파일은 표시만 한다.
-※ 기능 우선 버전(2026-11-21). UX/UI는 이후 개편 예정 — 화면 구성만 바꾸고 engine/growth.py는 그대로 쓰면 된다.
-
-입력: st.session_state["lab_request"]  (docs/GrowthLab_인계.md 3장)
-  - {"type": "plan", ...}             AI 분석가에서 넘어온 새 계획
-  - {"type": "lab", "promotion_id"}   아침 브리핑에서 넘어온 프로모션 결과 보기
-  - 없음                               등록된 프로모션 목록
+The chatbot integration is intentionally excluded from this UI revision.
+Historical metrics are based on the app's frozen as-of date (2026-10-26).
 """
+from datetime import timedelta
+
 import altair as alt
 import pandas as pd
 import streamlit as st
 
 from engine import briefing as B
-from engine import case as C
 from engine import data as D
 from engine import growth as G
+from engine import growth_policy as GP
 from engine import ui
 
+
 ss = st.session_state
-today = D.TODAY                  # 기준일 고정(10/26 아침)
-day_str = f"{today:%Y-%m-%d}"
-req = ss.get("lab_request")
-mt = ui.get_mart()               # 기준일 이전 데이터만 들어 있음
-ss["growth_context"] = None      # 화면이 계산을 마치면 아래에서 채운다(오른쪽 AI 분석가가 참고)
+today = D.TODAY
+mart = ui.get_mart()
+assumed_response = (-0.05, 0.10, 0.30)  # fixed defaults; NOT a predicted promotion uplift
 
 st.title("Growth Lab")
-st.caption(f"기준일 {day_str} 아침 · 손익 기준: 최근 {G.BASE_DAYS}일 · "
-           f"이익 = 결제 금액 − 상품원가 − 배송 원가(주문당 {G.SHIP_COST:,}원), 기타 비용 제외")
+st.caption(
+    f"데이터 기준일 {today:%Y-%m-%d} 아침 · 최근 28일 주문 기준 · "
+    f"이익 = 결제금액 − 상품원가 − 배송 원가(주문당 {B.SHIP_COST:,}원), 기타 비용 제외"
+)
+
+# Open the existing promotion automatically when coming from Morning Briefing.
+request = ss.get("lab_request") or {}
+incoming = request.get("promotion_id") if request.get("type") == "lab" else None
+if incoming and ss.get("gl_incoming_id") != incoming:
+    ss["gl_incoming_id"] = incoming
+    ss["gl_screen"] = "등록된 프로모션"
+ss.setdefault("gl_screen", "새 프로모션 분석")
+screen = st.segmented_control(
+    "보기", ["새 프로모션 분석", "등록된 프로모션"], key="gl_screen",
+    label_visibility="collapsed"
+)
 
 
-# ======================================================================= 결과 보기
 def show_result(pid: str):
-    promos = B.promo_status(ui.get_mart(), today - pd.Timedelta(days=1))
-    p = next((x for x in promos if x["id"] == pid), None)
-    raw = ui.get_mart()["raw"]["promotion"]
-    if p is None:
-        row = raw[raw["promotion_id"].eq(pid)]
-        st.warning(f"{pid}: 기준일 기준으로 판정할 수 있는 기간이 아닙니다(시작 전이거나 종료 후 14일이 지남)."
-                   if len(row) else f"{pid}: 등록된 프로모션이 없습니다.")
+    promos = mart["raw"].get("promotion", pd.DataFrame())
+    row = promos[promos["promotion_id"].astype(str).eq(str(pid))]
+    if row.empty:
+        st.warning("등록된 프로모션을 찾지 못했습니다.")
         return
-    st.subheader(f"{p['name']} 결과")
-    st.caption(f"{ui.md(p['start'])}~{ui.md(p['end'])} · {p['phase']} {p['days']}/{p['total_days']}일"
-               + (" · 모의 데이터" if p["is_simulated"] else ""))
-    a, b, c, d = st.columns(4)
-    a.metric("판정", p["status"])
-    a.caption("7일 미만은 판단 이름")
-    b.metric(f"{p['category']} 일평균 매출", ui.won(p["sales_dur"]),
-             f"{p['sales_chg']:+.0%} 시작 전 14일 대비" if p["sales_chg"] is not None else None)
-    eff = "–" if p["effect"] is None else f"{p['effect']:+.0%}"
-    c.metric("다른 카테고리 대비 효과", eff,
-             None if p["effect_lo"] is None else f"95% 구간 {p['effect_lo']:+.0%} ~ {p['effect_hi']:+.0%}", delta_color="off")
-    d.metric("이익률", ui.pct(p["margin_dur"]),
-             f"{-p['margin_drop_pp']:+.1f}%p" if p["margin_drop_pp"] is not None else None)
-    ss["growth_context"] = {"화면": "Growth Lab 프로모션 결과", **{k: p[k] for k in (
-        "name", "category", "phase", "days", "total_days", "sales_chg", "effect", "effect_lo", "effect_hi",
-        "margin_pre", "margin_dur", "status", "stop_rule")}}
-    ss["page_context"] = f"Growth Lab에서 {p['name']} 결과(판정 {p['status']})를 보고 있음"
-    s = G.result_series(ui.get_mart(), p)
-    s = s[s["날짜"] < today]
-    chart = alt.Chart(s).mark_bar().encode(
-        x=alt.X("날짜:T", title=None), y=alt.Y("매출:Q", title="대상 카테고리 일 매출(원)", axis=alt.Axis(format="~s")),
-        color=alt.Color("구간:N", scale=alt.Scale(domain=["시작 전", "기간 중"], range=[ui.C_PREV, ui.C_MAIN]), title=None),
-        tooltip=["날짜:T", alt.Tooltip("매출:Q", format=","), alt.Tooltip("이익:Q", format=",")])
-    st.altair_chart(chart.properties(height=260), width="stretch")
-    st.caption(f"중단 기준: {p['stop_rule']} · 효과 = 대상 카테고리 매출 비중의 변화(같은 기간 다른 카테고리 변화를 뺌), "
-               "일 단위 재추출 95% 구간. 구간이 0을 넘으면 '효과 있음'.")
-    with st.expander("판정 방법"):
-        st.markdown("- 7일 미만: 판단 이름\n- 이익률 하락이 중단 기준 초과(3일 이상): 중단 검토\n"
-                    "- 효과 95% 구간 하한 > 0: 효과 있음 / 상한 < 0: 효과 없음(감소) / 그 외: 효과 불분명")
-
-
-# ======================================================================= 새 계획
-def show_plan(r: dict):
-    target = r["target"]
-    st.subheader(f"계획: {C.target_text(target)}")
-    dg = r.get("diagnosis") or {}
-    with st.container(border=True):
-        st.markdown(f"**출발 질문** {r.get('question', '')}")
-        if dg:
-            st.markdown(f"**진단** {dg.get('metric', '')}: 최근 7일 {ui.won(dg.get('value'))} · 직전 4주 {ui.won(dg.get('base'))}"
-                        + (f" ({dg['change']:+.0%})" if dg.get("change") is not None else "")
-                        + (f" / 최근 3일 {dg['change3']:+.0%}" if dg.get("change3") is not None else ""))
-        if r.get("cause_hypothesis"):
-            st.caption(f"원인 가설(확인 전): {r['cause_hypothesis']}")
-        for e in r.get("evidence", [])[:4]:
-            st.caption(f"근거: {e}")
-
-    # ---------------- 수단 조정
-    st.markdown("#### 수단")
-    lv = dict(r["lever"])
-    pols = [p for p in G.LEVER_LABEL if not (p == "bundle" and target["type"] == "category")]
-    c1, c2 = st.columns([1, 1])
-    pol = c1.selectbox("수단", pols, index=pols.index(lv["policy"]) if lv["policy"] in pols else 0,
-                       format_func=lambda p: G.LEVER_LABEL[p], key="gl_policy")
-    if pol == "shipping":
-        val = c2.number_input("무료배송 기준(원, 현재 30,000원)", 0, 100000,
-                              int(abs(lv["value"])) if lv["policy"] == "shipping" else 20000, 5000, key="gl_value_ship")
-    else:
-        val = c2.number_input("할인율(%)", 1.0, 50.0, float(abs(lv["value"])) if lv["policy"] == pol else 5.0, 1.0,
-                              key="gl_value_pct")
-    lever = {"policy": pol, "value": val}
-    if lv["policy"] == "bundle" and target["type"] == "category":
-        st.caption("묶음 할인은 상품 2개 이상을 지정해야 계산할 수 있어 카테고리 대상에서는 다른 수단으로 바꿨습니다.")
-
-    # ---------------- 1. 본전
-    try:
-        be = G.breakeven(mt, target, lever, today)
-    except ValueError as ex:
-        st.error(f"손익을 계산할 수 없습니다: {ex}")
+    saved = row.iloc[0]
+    st.subheader(str(saved["promotion_name"]))
+    st.caption(f"{pd.Timestamp(saved['start_date']):%Y-%m-%d} ~ "
+               f"{pd.Timestamp(saved['end_date']):%Y-%m-%d} · {saved['category']} 카테고리")
+    terms = {
+        "대상": str(saved["category"]),
+        "수단": str(saved["lever"]),
+        "할인 방식": str(saved.get("discount_type", "") or "기존 등록 데이터"),
+        "할인 조건": str(saved.get("discount_value", "") or saved.get("discount_pct", "")),
+        "배송 기준": str(saved.get("shipping_threshold", "") or "—"),
+        "주 지표": str(saved["primary_metric"]),
+        "짝 지표": str(saved["guard_metric"]),
+        "중단 기준": str(saved["stop_rule"]),
+    }
+    with st.expander("등록한 실행 계획", expanded=True):
+        st.dataframe(pd.DataFrame(terms.items(), columns=["항목", "내용"]),
+                     hide_index=True, width="stretch")
+    status = next((p for p in B.promo_status(mart, today - pd.Timedelta(days=1))
+                   if str(p["id"]) == str(pid)), None)
+    if status is None:
+        if pd.Timestamp(saved["start_date"]).normalize() >= today:
+            st.info("아직 시작 전인 실행 계획입니다. 시작일 이후 실제 주문 데이터가 쌓이면 결과를 확인할 수 있습니다.")
+        else:
+            st.info("현재 데이터 기준일에서는 평가할 수 없는 프로모션입니다. 종료 후 14일이 지났거나 관측 데이터가 부족합니다.")
         return
-    st.markdown("#### 1. 본전에 필요한 추가 주문")
+    p = status
+    st.markdown("#### 운영 성과")
     a, b, c = st.columns(3)
-    a.metric(f"최근 {G.BASE_DAYS}일 대상 주문", f"{be['orders']:,}건", help="대상 상품이 들어 있는 완료 주문")
-    b.metric("주문 수가 그대로면 이익", ui.won(be["profit_after0"]),
-             f"{be['profit_after0'] - be['profit_before']:+,.0f}원 (현재 {ui.won(be['profit_before'])})")
-    if be["required"] is None:
-        c.metric("본전 주문 증가율", "계산 불가", help="정책 후 주문당 이익이 0 이하입니다.")
+    a.metric("대상 일평균 매출", ui.won(p["sales_dur"]),
+             f"{p['sales_chg']:+.1%}" if p["sales_chg"] is not None else None)
+    b.metric("다른 카테고리 대비 매출 비중 변화",
+             f"{p['effect']:+.1%}" if p["effect"] is not None else "—")
+    c.metric("대상 이익률", ui.pct(p["margin_dur"]),
+             f"{-p['margin_drop_pp']:+.1f}%p" if p["margin_drop_pp"] is not None else None)
+    if p["status"] == "중단 검토":
+        st.error(f"판정: {p['status']} · 이익률 중단 기준 점검이 필요합니다.")
     else:
-        c.metric("본전 주문 증가율", f"{be['required']:+.1%}", f"28일 기준 약 {be['required_orders']:+,.0f}건", delta_color="off")
-    st.caption("확정 계산입니다. 주문 구성·단가는 최근 28일과 같고 대상 주문 수만 비례해 변한다고 봅니다.")
-    with st.expander("손익 비교표"):
-        tb = be["table"].copy()
-        for col in ("현재", "변경안", "차이"):
-            tb[col] = tb[col].map(lambda v: f"{v:,.0f}")
-        st.dataframe(tb, hide_index=True, width="stretch")
-        for n in be["notes"]:
-            st.caption(n)
+        st.info(f"판정: {p['status']} · 운영 {p['days']}/{p['total_days']}일")
+    series = G.result_series(mart, p)
+    series = series[series["날짜"] < today]
+    if len(series):
+        chart = alt.Chart(series).mark_bar().encode(
+            x=alt.X("날짜:T", title=None),
+            y=alt.Y("매출:Q", title="일매출(원)"),
+            color=alt.Color("구간:N", title=None),
+            tooltip=["날짜:T", alt.Tooltip("매출:Q", format=",.0f")])
+        st.altair_chart(chart.properties(height=240), width="stretch")
+    st.caption("아침 브리핑과 동일한 판정을 사용합니다. 관측 전후 비교는 무작위 실험에 의한 인과적 검증이 아닙니다.")
+    ss["growth_context"] = {"화면": "Growth Lab 프로모션 결과", "프로모션": p["name"],
+                            "판정": p["status"], "카테고리": p["category"]}
 
-    # ---------------- 2. 이익 확률
-    st.markdown("#### 2. 이익이 날 확률")
-    req_pct = (be["required"] or 0) * 100
-    a, b, c, d = st.columns(4)
-    low = a.number_input("주문 반응 최소(%)", -50.0, 200.0, -5.0, 1.0, key="gl_low")
-    mode = b.number_input("가장 가능성 높음(%)", -50.0, 200.0, round(max(req_pct, 0) + 5, 0), 1.0, key="gl_mode")
-    high = c.number_input("최대(%)", -50.0, 200.0, round(max(req_pct * 2, 30), 0), 1.0, key="gl_high")
-    days = d.number_input("진행 일수", 7, 60, 14, 1, key="gl_days")
+
+def show_registered():
+    st.subheader("등록된 프로모션")
+    promos = mart["raw"].get("promotion", pd.DataFrame()).copy()
+    if promos.empty:
+        st.info("등록된 프로모션이 없습니다. 새 프로모션 분석에서 먼저 계획을 등록할 수 있습니다.")
+        return
+    current = {p["id"]: p["status"] for p in B.promo_status(mart, today - pd.Timedelta(days=1))}
+    promos["평가 상태"] = promos["promotion_id"].map(current).fillna("시작 전 / 평가 기간 외")
+    labels = promos["promotion_id"].astype(str) + " · " + promos["promotion_name"].astype(str)
+    selection = st.selectbox("조회할 프로모션", list(promos["promotion_id"].astype(str)),
+                             index=(list(promos["promotion_id"].astype(str)).index(str(incoming))
+                                    if incoming and str(incoming) in list(promos["promotion_id"].astype(str)) else 0),
+                             format_func=lambda pid: str(labels.loc[promos["promotion_id"].astype(str).eq(pid)].iloc[0]))
+    show_result(selection)
+    with st.expander("전체 프로모션 목록"):
+        cols = ["promotion_id", "promotion_name", "start_date", "end_date", "평가 상태"]
+        table = promos[cols].copy()
+        table["start_date"] = pd.to_datetime(table["start_date"]).dt.strftime("%Y-%m-%d")
+        table["end_date"] = pd.to_datetime(table["end_date"]).dt.strftime("%Y-%m-%d")
+        st.dataframe(table, hide_index=True, width="stretch")
+
+
+def show_planner():
+    st.subheader("1. 프로모션 설정")
+    cats = sorted(mart["raw"]["product"]["category"].dropna().astype(str).unique().tolist())
+    if not cats:
+        st.warning("선택할 카테고리가 없습니다.")
+        return
+    col1, col2 = st.columns(2)
+    category = col1.selectbox("카테고리", cats, key="gl_cat")
+    policy = col2.selectbox(
+        "프로모션 종류", ["price", "discount", "shipping"],
+        format_func=lambda p: {"price": "판매가 할인", "discount": "할인 쿠폰", "shipping": "무료배송 기준 변경"}[p],
+        key="gl_policy"
+    )
+    coupon_type = "rate"
+    if policy == "discount":
+        coupon_type_label = st.segmented_control(
+            "할인 방식", ["할인율 (%)", "할인액 (원)"], default="할인율 (%)",
+            key="gl_coupon_mode"
+        )
+        coupon_type = "fixed" if coupon_type_label == "할인액 (원)" else "rate"
+        if coupon_type == "fixed":
+            value = st.number_input("주문당 할인액 (원)", min_value=0, max_value=100000,
+                                    value=2000, step=500, key="gl_coupon_fixed")
+        else:
+            value = st.number_input("할인율 (%)", min_value=0.0, max_value=50.0,
+                                    value=5.0, step=1.0, key="gl_coupon_pct")
+        st.caption("선택 카테고리 상품금액에만 적용 · 주문당 1회 · 기존 해당 카테고리 쿠폰과 중복되지 않음")
+    elif policy == "price":
+        value = st.number_input("판매가 할인율 (%)", min_value=0.0, max_value=50.0,
+                                value=5.0, step=1.0, key="gl_price_pct")
+        st.caption("선택 카테고리 상품에 적용 · 기존 해당 카테고리 쿠폰 할인과 중복되지 않음")
+    else:
+        value = st.number_input("변경 후 무료배송 기준금액 (원)", min_value=0, max_value=30000,
+                                value=20000, step=1000, key="gl_ship_threshold")
+        st.caption(
+            "기존 기준 30,000원 → 입력 금액으로 변경. "
+            "선택 카테고리 상품금액만 기준을 충족해야 무료배송입니다. "
+            "예: 정육 15,000원 + 과일 5,000원은 정육 20,000원 기준을 충족하지 않습니다."
+        )
+
+    lever = {"policy": policy, "value": value, "discount_type": coupon_type}
     try:
-        pp = G.profit_probability(be, mt, target, today, low / 100, mode / 100, high / 100, int(days))
+        normalized = GP.normalize_lever(lever)
     except ValueError as ex:
         st.error(str(ex))
         return
-    a, b = st.columns([1, 2])
-    a.metric("이익이 늘어날 확률", f"{pp['prob']:.0%}")
-    a.caption(f"{int(days)}일 이익 차이: 하위 10% {pp['diff_p10']:+,.0f}원 · 중간 {pp['diff_p50']:+,.0f}원 · "
-              f"상위 10% {pp['diff_p90']:+,.0f}원")
-    hist = alt.Chart(pp["hist"]).mark_bar(color=ui.C_MAIN).encode(
-        x=alt.X("이익 차이:Q", bin=alt.Bin(maxbins=40), title=f"{int(days)}일 이익 차이(원)"),
-        y=alt.Y("count()", title=None))
-    rule = alt.Chart(pd.DataFrame({"x": [0]})).mark_rule(color=ui.C_DOWN).encode(x="x:Q")
-    b.altair_chart((hist + rule).properties(height=180), width="stretch")
-    st.caption(f"가정: 주문 반응 {low:+.0f}% ~ {high:+.0f}% (가장 가능성 높음 {mode:+.0f}%). AI가 예측한 값이 아니라 입력한 가정입니다. "
-               "날마다의 매출 흔들림(최근 56일)을 함께 반영한 2만 번 모의 계산입니다.")
+    st.caption(
+        "기본 주문 반응 가정 자동 적용: 최소 −5% · 가장 가능성 높은 값 +10% · 최대 +30% "
+        "(실제 고객 행동의 예측값은 아닙니다)."
+    )
+    params = {"category": category, "lever": normalized}
+    if st.button("프로모션 분석하기", type="primary", use_container_width=True):
+        ss["gl_analysis_params"] = params
+    if ss.get("gl_analysis_params") != params:
+        st.info("카테고리와 프로모션 조건을 입력한 후 '프로모션 분석하기'를 선택하십시오.")
+        return
 
-    # ---------------- 3. 확인 기간
-    st.markdown("#### 3. 효과 확인에 필요한 기간")
-    eff = max(mode / 100, (be["required"] or 0))
-    dd = G.detect_days(mt, target, today, eff)
-    a, b = st.columns([1, 3])
-    a.metric("필요 일수", "–" if dd["days"] is None else f"{dd['days']}일", dd["status"], delta_color="off")
-    b.markdown(dd["note"])
-    b.caption(f"기준: 대상 매출 비중(평균 {dd['share_mean']:.1%}, 하루 흔들림 {dd['share_sd']:.1%}p) · "
-              f"기대 효과 {eff:+.0%}(가장 가능성 높은 반응과 본전 중 큰 값) · 유의수준 5%, 검정력 80% · 시작 전 {G.PRE_DAYS}일과 비교")
+    try:
+        s, e = G.base_period(today)
+        pair = GP.replay(mart, category, normalized, s, e)
+        be = GP.break_even(pair)
+        detect = G.detect_days(mart, {"type": "category", "value": category},
+                               today, effect=assumed_response[1])
+        suggested_days = (detect["days"] if detect["status"] == "확인 가능"
+                          and detect["days"] is not None else 14)
+        with st.expander("운영 기간 변경 (선택 사항)"):
+            override = st.toggle("운영 기간 직접 지정", value=False, key="gl_days_override")
+            if override:
+                days = st.number_input("운영 기간(일)", min_value=7, max_value=60,
+                                       value=14, step=1, key="gl_days_custom")
+            else:
+                days = suggested_days
+        mc = GP.monte_carlo(mart, category, normalized, today, days=days,
+                            low=assumed_response[0], mode=assumed_response[1],
+                            high=assumed_response[2], n=20000)
+    except (ValueError, KeyError) as ex:
+        st.error(f"시뮬레이션을 실행하지 못했습니다: {ex}")
+        return
 
-    # ---------------- 4. 실행 계획
-    st.markdown("#### 4. 실행 계획")
-    rec_days = dd["days"] if dd["days"] and dd["status"] == "확인 가능" else 14
+    st.subheader("2. 분석 결과")
+    st.caption(f"해당 카테고리를 포함한 주문 전체 기준 · 운영 {days}일 · 20,000회 몬테카를로")
     a, b, c = st.columns(3)
-    start = a.date_input("시작일", today.date(), key="gl_start")
-    end = b.date_input("종료일(포함)", (pd.Timestamp(start) + pd.Timedelta(days=rec_days - 1)).date(), key="gl_end")
-    stop_pp = c.number_input("중단 기준: 이익률 하락(%p)", 1.0, 30.0, 8.0, 1.0, key="gl_stop")
-    plan_tbl = pd.DataFrame([
-        ("대상", C.target_text(target)), ("수단", G.lever_text(lever)),
-        ("기간", f"{start:%Y-%m-%d} ~ {end:%Y-%m-%d} ({(pd.Timestamp(end) - pd.Timestamp(start)).days + 1}일)"),
-        ("주 지표", r.get("primary_metric") or f"{C.target_text(target)} 일평균 매출"),
-        ("짝 지표", f"{C.target_text(target)} 이익률"),
-        ("중단 기준", f"이익률이 시작 전보다 {stop_pp:g}%p 넘게 떨어지면 중단"),
-        ("본전 주문 증가율", "–" if be["required"] is None else f"{be['required']:+.1%}"),
-        ("이익 확률(가정)", f"{pp['prob']:.0%}"), ("확인 가능성", f"{dd['status']}" + (f" ({dd['days']}일)" if dd["days"] else "")),
-    ], columns=["항목", "내용"])
-    st.dataframe(plan_tbl, hide_index=True, width="stretch")
-    ss["growth_context"] = {
-        "화면": "Growth Lab 새 계획", "대상": C.target_text(target), "수단": G.lever_text(lever),
-        "손익 기준 기간": f"{be['period'][0]:%Y-%m-%d} ~ {be['period'][1]:%Y-%m-%d}",
-        "simulate_policy 범위": {"categories": [target["value"]]} if target["type"] == "category" else {"product": target["value"]},
-        "대상 주문": be["orders"], "현재 이익": round(be["profit_before"]), "주문 그대로일 때 이익": round(be["profit_after0"]),
-        "본전 주문 증가율": None if be["required"] is None else round(be["required"], 4),
-        "주문 반응 가정(%)": {"최소": low, "가장 가능성 높음": mode, "최대": high}, "진행 일수": int(days),
-        "이익이 늘어날 확률": round(pp["prob"], 3), "확인 가능성": dd["status"], "필요 일수": dd["days"],
-        "배송 원가(주문당)": G.SHIP_COST}
-    ss["page_context"] = f"Growth Lab에서 {C.target_text(target)} {G.lever_text(lever)} 계획을 검토 중"
-    if pd.Timestamp(end) >= D.PERIOD_END:
-        st.caption("데이터가 10/31까지라 그 이후 기간의 결과는 아침 브리핑에 나오지 않습니다(가상 데이터 한계).")
-    if st.button("실행 계획 등록", type="primary"):
+    a.metric("예상 매출", ui.won(mc["sales_p50"]),
+             help="운영 기간 내 조건부 매출 중앙값. 선택 카테고리가 포함된 주문 전체의 매출입니다.")
+    a.caption(f"예상 범위(10~90%): {ui.won(mc['sales_p10'])} ~ {ui.won(mc['sales_p90'])}")
+    b.metric("예상 이익률", ui.pct(mc["margin_p50"]),
+             help="상품원가와 주문당 배송 원가를 반영한 이익률 중앙값")
+    b.caption(f"예상 범위(10~90%): {ui.pct(mc['margin_p10'])} ~ {ui.pct(mc['margin_p90'])}")
+    if detect["status"] == "확인 가능":
+        c.metric("효과 확인 기간", f"{detect['days']}일")
+    else:
+        c.metric("효과 확인 기간", "확인 어려움")
+    c.caption(detect["status"] + " · 최대 28일 이내 평가 기준")
+
+    with st.container(border=True):
+        if be["required"] is None:
+            st.markdown("#### 기존 이익 유지: 주문 증가만으로 달성하기 어려움")
+            st.caption("정책 적용 후 주문당 이익이 0 이하이므로 주문 수를 늘려도 본전 회복이 어렵습니다.")
+        else:
+            req = max(be["required"], 0.0)
+            st.markdown(f"#### 기존 이익을 유지하려면 주문 **+{req:.1%}** 필요")
+            st.caption(f"기준 28일 주문 {be['orders']:,}건 · 추가 주문 "
+                       f"{max(0, be['required_orders']):,}건 · 주문 구성·원가가 유지된다는 가정")
+        st.metric("기존보다 이익이 증가할 확률", f"{mc['prob']:.1%}",
+                  help="정책 미시행과 비교한 조건부 이익 증가 확률")
+    with st.expander("시뮬레이션 상세 · 근거 및 가정"):
+        st.markdown(
+            f"**기본 주문 반응 가정:** {assumed_response[0]:+.0%} ~ "
+            f"{assumed_response[2]:+.0%}, 가장 가능성 높은 값 {assumed_response[1]:+.0%}"
+        )
+        st.markdown(
+            f"**이익 차이(10·50·90백분위수):** "
+            f"{ui.won(mc['profit_delta_p10'])} / {ui.won(mc['profit_delta_p50'])} / "
+            f"{ui.won(mc['profit_delta_p90'])}"
+        )
+        df = pd.DataFrame([{
+            "구분": "정책 적용 전(기준 28일)", "매출": be["before"]["revenue"],
+            "이익": be["before"]["profit"], "이익률": be["before"]["margin"]
+        }, {
+            "구분": "주문 수 동일 시 정책 적용 후(28일)", "매출": be["after"]["revenue"],
+            "이익": be["after"]["profit"], "이익률": be["after"]["margin"]
+        }])
+        st.dataframe(df, hide_index=True, width="stretch")
+        hist = alt.Chart(mc["hist"]).mark_bar(color=ui.C_MAIN).encode(
+            x=alt.X("이익 차이:Q", bin=alt.Bin(maxbins=35), title="정책 시행−미시행 이익 차이(원)"),
+            y=alt.Y("count()", title="시뮬레이션 횟수"))
+        st.altair_chart(hist.properties(height=175), width="stretch")
+        st.caption(
+            "최근 56일 대상 주문의 일별 매출·이익을 재표본화하고, "
+            "기본 주문 반응(삼각분포)을 적용한 조건부 결과입니다. "
+            "실제 주문 증가율의 AI 예측이나 프로모션 효과의 인과 추정은 아닙니다."
+        )
+        st.caption(f"효과 확인 기간: {detect['note']}")
+
+    st.subheader("3. 실행 계획")
+    start = st.date_input("프로모션 시작일", value=today.date(), key="gl_start")
+    end = start + timedelta(days=int(days)-1)
+    with st.container(border=True):
+        st.markdown(f"**{category} · {G.lever_text(normalized)}**")
+        st.write(f"운영 기간: {start:%Y-%m-%d} ~ {end:%Y-%m-%d} ({days}일)")
+        st.write(f"주 지표: {category} 일평균 매출")
+        st.write(f"짝 지표: {category} 이익률")
+        st.write("중단 기준: 이익률이 시작 전보다 8%p 초과 하락하면 중단 검토")
+    st.caption("실행 계획 등록은 운영 정책을 저장하는 기능입니다. 실제 쇼핑몰 할인이나 쿠폰을 발행하지는 않습니다.")
+    if st.button("실행 계획 등록", type="primary", use_container_width=True):
         try:
-            row = G.plan_row(ui.get_mart()["raw"]["promotion"], target, lever, start, end, today,
-                             r.get("primary_metric") or f"{C.target_text(target)} 일평균 매출", stop_pp)
-            where = G.save_plan(row)
-        except Exception as ex:  # noqa: BLE001
-            st.error(f"등록하지 못했습니다: {ex}")
+            row = G.plan_row(mart["raw"]["promotion"],
+                             {"type": "category", "value": category}, normalized,
+                             start, end, today, f"{category} 일평균 매출", 8.0,
+                             response=assumed_response)
+            location = G.save_plan(row)
+        except Exception as ex:
+            st.error(f"계획 등록에 실패했습니다: {ex}")
         else:
             ui.get_mart.clear()
-            st.cache_data.clear()
-            st.cache_resource.clear()
-            st.success(f"{row['promotion_id']} {row['promotion_name']} 등록 완료({where}). "
-                       "시작일부터 아침 브리핑의 프로모션 점검에 나옵니다.")
+            st.success(f"{row['promotion_id']} 실행 계획을 등록했습니다. 저장 위치: {location}. "
+                       "등록된 프로모션 화면에서 확인할 수 있습니다.")
+    ss["growth_context"] = {
+        "화면": "Growth Lab 프로모션 검토", "카테고리": category,
+        "프로모션": G.lever_text(normalized), "손익 기준": "최근 28일",
+        "주문 반응 가정": assumed_response, "운영 일수": int(days),
+        "예상 매출 중앙값": round(mc["sales_p50"]),
+        "예상 이익률 중앙값": round(mc["margin_p50"], 4),
+        "이익 증가 확률": round(mc["prob"], 4),
+        "본전 주문 증가율": be["required"], "효과 확인 기간": detect["days"]
+    }
 
 
-# ======================================================================= 목록
-def show_list():
-    st.info("AI 분석가에서 '계획 세우기'로 넘어오거나, 아침 브리핑의 '결과 보기'로 넘어오면 이 화면이 채워집니다.")
-    promos = ui.get_mart()["raw"]["promotion"].copy()
-    if promos.empty:
-        st.caption("등록된 프로모션이 없습니다.")
-        return
-    st.markdown("#### 등록된 프로모션")
-    status = {p["id"]: p["status"] for p in B.promo_status(ui.get_mart(), today - pd.Timedelta(days=1))}
-    promos["판정(기준일)"] = promos["promotion_id"].map(status).fillna("–")
-    show = promos[["promotion_id", "promotion_name", "start_date", "end_date", "status", "판정(기준일)"]].copy()
-    show.columns = ["ID", "이름", "시작", "종료", "상태", "판정(기준일)"]
-    for col in ("시작", "종료"):
-        show[col] = pd.to_datetime(show[col]).dt.strftime("%Y-%m-%d")
-    st.dataframe(show, hide_index=True, width="stretch")
-    pid = st.selectbox("결과 볼 프로모션", promos["promotion_id"], key="gl_pick")
-    if st.button("결과 보기"):
-        ss.lab_request = {"type": "lab", "promotion_id": pid}
-        st.rerun()
-
-
-if not req:
-    show_list()
-elif req.get("type") == "plan":
-    show_plan(req)
-elif req.get("type") == "lab" and req.get("promotion_id"):
-    show_result(req["promotion_id"])
+if screen == "등록된 프로모션":
+    show_registered()
 else:
-    show_list()
-if req:
-    if st.button("목록으로"):
-        ss.pop("lab_request", None)
-        st.rerun()
+    show_planner()
