@@ -55,7 +55,7 @@ python dashboard_v2/pipeline/extend_october.py --gen ecommerce_generation_bluepr
 
 ### Supabase 데이터베이스 사용 시 필수 스키마 갱신
 
-기존에 `promotion` 테이블을 만든 DB에서는 **`db/schema.sql` 하단의 `ALTER TABLE promotion ADD COLUMN IF NOT EXISTS ...` 6개 문장**을 SQL Editor에서 한 번 실행해 주세요. 정액 쿠폰 금액/할인 방식/배송 기준금액/주문 반응 가정을 보존하기 위한 신규 열입니다. DB에 쓰기 권한이 없는 `dashboard_reader` 계정으로는 등록이 실패하므로, 별도의 INSERT 권한이 있는 운영 계정이 필요합니다. 연결된 DB를 자동 변경하지 않습니다.
+기존에 `promotion` 테이블을 만든 DB에서는 **`db/migrate_growthlab.sql`** 전체를 Supabase SQL Editor에서 한 번 실행해 주세요. (`db/schema.sql`에도 같은 신규 컬럼 정의를 반영했습니다.) 정액 쿠폰 금액/할인 방식/배송 기준금액/주문 반응 가정을 보존하기 위한 신규 열입니다. DB에 쓰기 권한이 없는 `dashboard_reader` 계정으로는 등록이 실패하므로, 별도의 INSERT 권한이 있는 운영 계정이 필요합니다. 연결된 DB를 자동 변경하지 않습니다.
 
 로컬 CSV 모드에서는 `data/promotion.csv`에 열을 자동으로 추가하지만, Streamlit Cloud의 로컬 파일은 재배포·재시작 시 보존되지 않을 수 있습니다. **계획을 지속 저장하려면 DB 모드**를 사용하세요.
 
@@ -68,3 +68,7 @@ streamlit run app.py
 ```
 
 테스트 파일 `tests/test_growth_policy.py`는 혼합 장바구니의 카테고리 단독 무료배송 판정, 주문당 정액 쿠폰, 카테고리 정률 쿠폰, 기존 쿠폰 중복 방지, 본전 계산을 확인합니다.
+
+### 기존 Streamlit Cloud 앱과의 연결
+
+GitHub `main`의 루트 `app.py`에서도 **아침 브리핑**과 **Growth Lab**은 `dashboard_v2/views/` 코드를 실행하도록 연결했습니다. 다른 네 가지 분석 화면은 기존 루트 `views/`를 유지해 팀원의 개편과 충돌을 줄였습니다. 새 두 화면에서의 챗봇 패널 연결은 이번 개편에서 제외했습니다. Streamlit Community Cloud에서 GitHub 루트 `app.py`를 실행하는 설정이라면 반영 대상입니다. `dashboard_v2/app.py`를 별도 메인 파일로 지정한 앱도 새 Growth Lab을 직접 실행합니다.
