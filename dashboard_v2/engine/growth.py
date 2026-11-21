@@ -23,7 +23,7 @@ BASE_DAYS = 28            # 손익 기준 기간: 기준일 전 28일(요일 구
 PRE_DAYS = 14             # 판정 시 비교하는 시작 전 기간 (briefing.PROMO["pre_days"]와 같음)
 Z = 1.96 + 0.84           # 유의수준 5%(양쪽) + 검정력 80%
 SHIPPING_FEE = 3000       # 무료배송 기준 미달 주문의 고객 배송비(현재 데이터)
-LEVER_LABEL = {"price": "판매가 할인", "discount": "주문 쿠폰(정률)", "shipping": "무료배송 기준", "bundle": "묶음 할인"}
+LEVER_LABEL = {"price": "판매가 할인", "discount": "할인 쿠폰", "shipping": "무료배송 기준"}
 
 
 # ---------------------------------------------------------------------------
@@ -45,7 +45,15 @@ def policy_config(lever: dict) -> dict:
 
 def lever_text(lever: dict) -> str:
     pol, v = lever["policy"], abs(float(lever["value"]))
-    return f"{LEVER_LABEL.get(pol, pol)} {v:,.0f}원" if pol == "shipping" else f"{LEVER_LABEL.get(pol, pol)} {v:g}%"
+    if pol == "shipping":
+        return f"무료배송 기준 {v:,.0f}원"
+    if pol == "discount" and lever.get("discount_type") == "fixed":
+        return f"정액 쿠폰 {v:,.0f}원 할인"
+    if pol == "discount":
+        return f"정률 쿠폰 {v:g}% 할인"
+    if pol == "price":
+        return f"판매가 {v:g}% 할인"
+    raise ValueError("지원하지 않는 프로모션입니다.")
 
 
 def scope_of(target: dict, m: dict) -> dict:
@@ -163,19 +171,35 @@ def next_promotion_id(promos: pd.DataFrame) -> str:
 
 
 def plan_row(promos: pd.DataFrame, target: dict, lever: dict, start: date, end: date, today,
-             primary_metric: str, stop_pp: float) -> dict:
+             primary_metric: str, stop_pp: float, response=(-0.05, 0.10, 0.30)) -> dict:
+    """Persist exact policy terms; do not conflate fixed coupons with percentages."""
+    from . import growth_policy as GP
     if target["type"] != "category":
-        raise ValueError("지금 판정 로직은 카테고리 단위만 지원합니다. 대상을 카테고리로 바꿔 주십시오.")
+        raise ValueError("Growth Lab은 카테고리 단위만 지원합니다.")
+    lv = GP.normalize_lever(lever)
     if end < start:
         raise ValueError("종료일이 시작일보다 빠릅니다.")
+    if not 0 < stop_pp <= 100:
+        raise ValueError("중단 기준은 0보다 큰 %p로 입력해 주십시오.")
+    if len(response) != 3 or not -1 < response[0] <= response[1] <= response[2]:
+        raise ValueError("주문 반응 기본 범위를 확인해 주십시오.")
     t = pd.Timestamp(today).normalize()
     cat = target["value"]
-    return {"promotion_id": next_promotion_id(promos), "promotion_name": f"{cat} {lever_text(lever)}",
-            "category": cat, "lever": lever["policy"], "discount_pct": abs(float(lever["value"])),
-            "start_date": pd.Timestamp(start).strftime("%Y-%m-%d"), "end_date": pd.Timestamp(end).strftime("%Y-%m-%d"),
+    v = lv["value"]
+    pct = v if lv["policy"] == "price" or (lv["policy"] == "discount" and lv["discount_type"] == "rate") else 0
+    return {"promotion_id": next_promotion_id(promos), "promotion_name": f"{cat} {lever_text(lv)}",
+            "category": cat, "lever": lv["policy"], "discount_pct": pct,
+            "discount_type": lv["discount_type"], "discount_value": v,
+            "shipping_threshold": v if lv["policy"] == "shipping" else None,
+            "order_response_low_pct": response[0] * 100,
+            "order_response_mode_pct": response[1] * 100,
+            "order_response_high_pct": response[2] * 100,
+            "start_date": pd.Timestamp(start).strftime("%Y-%m-%d"),
+            "end_date": pd.Timestamp(end).strftime("%Y-%m-%d"),
             "primary_metric": primary_metric, "guard_metric": f"{cat} 이익률",
             "stop_rule": f"{cat} 이익률이 시작 전보다 {stop_pp:g}%p 넘게 떨어지면 중단",
-            "status": "RUNNING" if pd.Timestamp(start) <= t else "PLANNED", "is_simulated": "FALSE"}
+            "status": "RUNNING" if pd.Timestamp(start) <= t else "PLANNED",
+            "is_simulated": "FALSE"}
 
 
 def save_plan(row: dict) -> str:
