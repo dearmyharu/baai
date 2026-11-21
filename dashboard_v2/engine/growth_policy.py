@@ -111,3 +111,62 @@ def daily_pair(m: dict, pair: dict, start, end) -> tuple[pd.DataFrame, pd.DataFr
         day = rows.groupby("date")[["revenue", "profit"]].sum()
         result.append(day.reindex(calendar, fill_value=0.0).astype(float))
     return result[0], result[1]
+
+
+def break_even(pair: dict) -> dict:
+    """Break-even basket growth for the same category-containing basket mix."""
+    before, after = totals(pair["before"]), totals(pair["after"])
+    required = (before["profit"] / after["profit"] - 1) if after["profit"] > 0 else None
+    return {"before": before, "after": after,
+            "required": required, "orders": len(pair["before"]),
+            "required_orders": max(0, int(np.ceil(len(pair["before"]) * required)))
+            if required is not None else None}
+
+
+def monte_carlo(m: dict, category: str, lever: dict, today, days: int,
+                low: float = -0.05, mode: float = 0.10, high: float = 0.30,
+                n: int = 20000, seed: int = 42) -> dict:
+    """Paired daily bootstrap + triangular order response for 20k scenarios.
+
+    The same historical day is used for before/after to avoid counting normal
+    day-to-day variation twice. Basket count changes proportionally while the
+    observed mix/price/cost of category-containing baskets remains stable.
+    Percentile bands are conditional scenario ranges, not forecasts trained on
+    campaign response. Revenue includes whole category-containing baskets.
+    """
+    if not (-1 < low <= mode <= high) or high > 10:
+        raise ValueError("주문 반응 기본 가정을 확인해 주십시오.")
+    if not 1 <= days <= 60:
+        raise ValueError("운영 기간은 1~60일 사이여야 합니다.")
+    if n < 100:
+        raise ValueError("시뮬레이션 반복 횟수는 100회 이상이어야 합니다.")
+    end = pd.Timestamp(today).normalize()
+    begin = end - pd.Timedelta(days=56)
+    pair = replay(m, category, lever, begin, end)
+    before, after = daily_pair(m, pair, begin, end)
+    rng = np.random.default_rng(seed)
+    idx = rng.integers(0, len(before), size=(n, days))
+    growth = rng.triangular(low, mode, high, n) if high > low else np.full(n, mode)
+    before_rev = before["revenue"].to_numpy()[idx].sum(axis=1)
+    before_profit = before["profit"].to_numpy()[idx].sum(axis=1)
+    after_rev = after["revenue"].to_numpy()[idx].sum(axis=1) * (1 + growth)
+    after_profit = after["profit"].to_numpy()[idx].sum(axis=1) * (1 + growth)
+    margin = np.divide(after_profit, after_rev, out=np.full(n, np.nan), where=after_rev > 0)
+    if not np.isfinite(margin).any():
+        raise ValueError("선택 카테고리의 매출이 없어 이익률을 계산할 수 없습니다.")
+    return {
+        "days": days, "n": n, "assumption": (low, mode, high),
+        "prob": float(np.mean(after_profit > before_profit)),
+        "sales_p10": float(np.percentile(after_rev, 10)),
+        "sales_p50": float(np.percentile(after_rev, 50)),
+        "sales_p90": float(np.percentile(after_rev, 90)),
+        "margin_p10": float(np.nanpercentile(margin, 10)),
+        "margin_p50": float(np.nanpercentile(margin, 50)),
+        "margin_p90": float(np.nanpercentile(margin, 90)),
+        "baseline_sales_p50": float(np.percentile(before_rev, 50)),
+        "baseline_profit_p50": float(np.percentile(before_profit, 50)),
+        "profit_delta_p10": float(np.percentile(after_profit - before_profit, 10)),
+        "profit_delta_p50": float(np.percentile(after_profit - before_profit, 50)),
+        "profit_delta_p90": float(np.percentile(after_profit - before_profit, 90)),
+        "hist": pd.DataFrame({"이익 차이": (after_profit - before_profit)[:4000]})
+    }
