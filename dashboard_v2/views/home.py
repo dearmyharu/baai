@@ -7,6 +7,7 @@ import altair as alt
 import pandas as pd
 import streamlit as st
 
+from engine import basis as BASIS
 from engine import briefing as B
 from engine import ui
 
@@ -30,7 +31,7 @@ st.session_state["page_context"] = (
                                     f"대상 일평균 매출 {p['sales_chg']:+.0%}, 이익률 {p['margin_pre']:.1%}→{p['margin_dur']:.1%})"
                                     for p in b["promos"])
     + " 금일 확인 사항: " + "; ".join(x["title"] for x in b["todos"]))
-LEVEL_COLOR = {"평소 대비 낮음": ui.C_DOWN, "평소 대비 높음": ui.C_UP}
+LEVEL_COLOR = {BASIS.LEVEL_LOW: ui.C_DOWN, BASIS.LEVEL_HIGH: ui.C_UP}
 
 st.title(f"{today.month}월 {today.day}일 ({B.DOW[today.dayofweek]}) 아침 브리핑")
 with st.container(border=True):

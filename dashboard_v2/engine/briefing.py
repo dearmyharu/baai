@@ -20,8 +20,10 @@ import re
 import numpy as np
 import pandas as pd
 
-SHIP_COST = 3000          # 판매자 배송 원가(주문당, 가정값)
-WEEKS = 4                 # '평소' = 최근 4주 같은 요일
+from . import basis as BASIS
+
+SHIP_COST = BASIS.SHIP_COST   # 판매자 배송 원가(주문당, 가정값) — 기준은 basis.py
+WEEKS = BASIS.WEEKS           # '평소' = 최근 4주 같은 요일
 
 # 할 일 규칙 기준값. 2026-11-20 실제 9월 데이터로 맞춤(eval/briefing_tune.py): 하루 평균 2.8건, 0건인 날 없음.
 # ④ 쿠폰 의존은 이 데이터에서 +10%p로 낮춰도 한 번도 걸리지 않음(쿠폰 사용 비중이 안정적).
@@ -62,54 +64,15 @@ def _won(v) -> str:
 # ---------------------------------------------------------------------------
 # 이익 장부 (완료 주문)
 # ---------------------------------------------------------------------------
-def ledger(m: dict, ship_cost: float = SHIP_COST) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """완료 주문 단위 장부와, 배송 부담을 상품금액 비율로 나눠 넣은 주문 상품 장부."""
-    it = m["items"]
-    it = it[it["order_status"].eq("COMPLETED")].copy()
-    it["cost"] = it["quantity"] * it["cost_price"]
-    o = m["orders"]
-    o = o[o["order_status"].eq("COMPLETED")].copy()
-    agg = it.groupby("order_id").agg(gross=("sales_amount", "sum"), discount=("allocated_coupon_discount", "sum"),
-                                     net=("net_sales", "sum"), cost=("cost", "sum"))
-    o = o.join(agg, on="order_id")
-    o[["gross", "discount", "net", "cost"]] = o[["gross", "discount", "net", "cost"]].fillna(0)
-    o["shipping_income"] = (o["total_amount"] - o["net"]).clip(lower=0)
-    o["ship_burden"] = ship_cost - o["shipping_income"]
-    o["profit"] = o["total_amount"] - o["cost"] - ship_cost
-    o["date"] = o["order_time"].dt.normalize()
-    share = it["net_sales"] / it["order_id"].map(o.set_index("order_id")["net"]).replace(0, pd.NA)
-    it["ship_burden"] = share.fillna(0).astype(float) * it["order_id"].map(o.set_index("order_id")["ship_burden"])
-    it["profit"] = it["net_sales"] - it["cost"] - it["ship_burden"]
-    it["date"] = it["order_time"].dt.normalize()
-    return o, it
+ledger = BASIS.ledger
 
 
 def _same_weekdays(day: pd.Timestamp, weeks: int = WEEKS) -> list[pd.Timestamp]:
     return [day - pd.Timedelta(days=7 * k) for k in range(1, weeks + 1)]
 
 
-def _level(value, base: list) -> str:
-    if not base:
-        return "비교 불가"
-    if value < min(base):
-        return "평소 대비 낮음"
-    if value > max(base):
-        return "평소 대비 높음"
-    return "평소 수준"
-
-
-LEVEL_BAND = 0.10   # 최근 3일 판정: 평소(지난 4주 같은 요일 3일 평균) 대비 ±10% 밖이면 낮음·높음
-                    # 근거: 9월 데이터에서 3일 매출 비율의 흔들림이 약 ±8% (2026-11-21 확인)
-
-
-def _level3(value, mean) -> str:
-    if not mean:
-        return "비교 불가"
-    if value < mean * (1 - LEVEL_BAND):
-        return "평소 대비 낮음"
-    if value > mean * (1 + LEVEL_BAND):
-        return "평소 대비 높음"
-    return "평소 수준"
+LEVEL_BAND = BASIS.BAND
+_level3 = BASIS.level
 
 
 # ---------------------------------------------------------------------------
@@ -215,9 +178,7 @@ def movers(it: pd.DataFrame, day: pd.Timestamp, n: int = 3) -> dict:
 # 4. 오늘 할 일
 # ---------------------------------------------------------------------------
 def _windows(day: pd.Timestamp, length: int) -> tuple[list, list[list]]:
-    cur = list(pd.date_range(day - pd.Timedelta(days=length - 1), day, freq="D"))
-    base = [[d - pd.Timedelta(days=7 * k) for d in cur] for k in range(1, WEEKS + 1)]
-    return cur, base
+    return BASIS.windows(day + pd.Timedelta(days=1), length)
 
 
 def _win_sum(t: pd.DataFrame, days: list) -> pd.Series:
@@ -582,8 +543,8 @@ def rank(items: list[dict], k: int) -> list[dict]:
 # ---------------------------------------------------------------------------
 def summary(y: dict, pace: dict, items: list[dict]) -> str:
     parts = []
-    lvl = {"평소 대비 낮음": "평소 대비 낮은 수준입니다", "평소 대비 높음": "평소 대비 높은 수준입니다",
-           "평소 수준": "평소 수준입니다"}.get(y["level"], "")
+    lvl = {BASIS.LEVEL_LOW: "평소보다 낮은 수준입니다", BASIS.LEVEL_HIGH: "평소보다 높은 수준입니다",
+           BASIS.LEVEL_NORMAL: "평소 수준입니다"}.get(y["level"], "")
     parts.append(f"최근 3일({_d(y['span3'][0])}~{_d(y['span3'][1])}) 매출은 {_won(y['revenue3'])}으로 {lvl}." if lvl
                  else f"최근 3일 매출은 {_won(y['revenue3'])}입니다.")
     parts.append(f"금일 확인 사항은 {len(items)}건입니다." if items else "금일 특이 사항은 없습니다.")
