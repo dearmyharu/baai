@@ -30,11 +30,19 @@ import pandas as pd  # noqa: E402
 from engine.briefing import SHIP_COST  # noqa: E402
 from engine.data import PERIOD_END, PERIOD_START  # noqa: E402
 
+from engine import ui  # noqa: E402
+
+# 기준일 범위는 실제로 읽은 데이터의 마지막 날에 맞춘다(DB에 10월이 아직 없으면 9/30까지)
+_last = ui.get_mart()["orders"]["order_time"].max().normalize()
+_max = min(_last + pd.Timedelta(days=1), PERIOD_END)
+_default = min(pd.Timestamp("2026-10-22"), _max)
+if "today" in st.session_state and pd.Timestamp(st.session_state["today"]) > _max:
+    st.session_state["today"] = _max.date()
 sb = st.sidebar
-sb.date_input("기준일(오늘)", value=pd.Timestamp("2026-10-22").date(),
-              min_value=(PERIOD_START + pd.Timedelta(days=35)).date(), max_value=PERIOD_END.date(),
+sb.date_input("기준일(오늘)", value=_default.date(),
+              min_value=(PERIOD_START + pd.Timedelta(days=35)).date(), max_value=_max.date(),
               key="today", help="이 날짜 아침에 보는 화면입니다. 데이터는 전일까지만 씁니다.")
-sb.caption("데이터: 2026-04-01 ~ 2026-10-31 (가상 데이터, 10월 프로모션은 모의)")
+sb.caption(f"데이터: 2026-04-01 ~ {_last:%Y-%m-%d} (가상 데이터, 10월 프로모션은 모의)")
 sb.caption(f"이익 = 결제 금액 − 상품원가 − 배송 원가(주문당 {SHIP_COST:,}원 가정). 결제 수수료 등 기타 비용 제외")
 
 page = st.navigation({"오늘": [PAGES["home"]], "결정": [PAGES["chat"], PAGES["lab"]], "분석": [PAGES["explore"]]})
