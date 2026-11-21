@@ -200,18 +200,18 @@ def show_planner():
         return
 
     st.subheader("2. 분석 결과")
-    st.caption(f"해당 카테고리를 포함한 주문 전체 기준 · 운영 {days}일 · 20,000회 몬테카를로")
+    st.caption(f"선택한 카테고리 상품 매출 기준 · 운영 {days}일 · 20,000회 몬테카를로")
     a, b, c = st.columns(3)
     a.metric("예상 매출", ui.won(mc["sales_p50"]),
-             help="운영 기간 내 조건부 매출 중앙값. 선택 카테고리가 포함된 주문 전체의 매출입니다.")
+             help="운영 기간 내 선택 카테고리 상품매출의 조건부 중앙값입니다. 다른 카테고리 매출은 제외합니다.")
     a.caption(f"예상 범위(10~90%): {ui.won(mc['sales_p10'])} ~ {ui.won(mc['sales_p90'])}")
     b.metric("예상 이익률", ui.pct(mc["margin_p50"]),
-             help="상품원가와 주문당 배송 원가를 반영한 이익률 중앙값")
+             help="선택 카테고리 상품원가와 주문별 배송 부담 배분액을 반영한 이익률 중앙값")
     b.caption(f"예상 범위(10~90%): {ui.pct(mc['margin_p10'])} ~ {ui.pct(mc['margin_p90'])}")
-    if detect["status"] == "확인 가능":
-        c.metric("효과 확인 기간", f"{detect['days']}일")
+    if detect["days"] is not None:
+        c.metric("효과 확인 기간", f"{detect['days']}일", help=detect["note"])
     else:
-        c.metric("효과 확인 기간", "확인 어려움")
+        c.metric("효과 확인 기간", "산출 어려움", help=detect["note"])
     c.caption(detect["status"] + " · 최대 28일 이내 평가 기준")
 
     with st.container(border=True):
@@ -222,7 +222,7 @@ def show_planner():
             req = max(be["required"], 0.0)
             st.markdown(f"#### 기존 이익을 유지하려면 주문 **+{req:.1%}** 필요")
             st.caption(f"기준 28일 주문 {be['orders']:,}건 · 추가 주문 "
-                       f"{max(0, be['required_orders']):,}건 · 주문 구성·원가가 유지된다는 가정")
+                       f"{max(0, be['required_orders']):,}건 · 카테고리 매출 구성·원가가 유지된다는 가정")
         st.metric("기존보다 이익이 증가할 확률", f"{mc['prob']:.1%}",
                   help="정책 미시행과 비교한 조건부 이익 증가 확률")
     with st.expander("시뮬레이션 상세 · 근거 및 가정"):
