@@ -19,6 +19,9 @@ WEEKS = 4            # '평소' = 지난 4주 같은 요일
 WINDOWS = (3, 7)     # 변화는 최근 3일과 최근 7일을 나란히 본다 (판단은 3~7일 흐름)
 DEFAULT_DAYS = 28    # 기간 없는 순위·비중·구성 질문
 SHIP_COST = 3000     # 판매자 배송 원가(주문당, 가정값). 이익 = 결제 금액 − 상품 원가 − 배송 원가
+FREE_SHIP_THRESHOLD = 30000   # 현재 무료배송 기준(상품금액). 데이터 확인: 미만 주문은 배송비 3,000원, 이상은 0원
+MIN_DAILY_ORDERS = 1.0        # 효과 확인 가능: 최근 28일 대상 주문이 하루 평균 1건 이상
+MIN_SALE_DAYS = 0.6           # 효과 확인 가능: 최근 28일 중 60% 이상 판매가 있는 날
 
 LEVEL_HIGH, LEVEL_NORMAL, LEVEL_LOW, LEVEL_NA = "평소보다 높음", "평소 수준", "평소보다 낮음", "비교 불가"
 
@@ -142,6 +145,44 @@ def _sum(t: pd.DataFrame, days: list) -> pd.Series:
     return t.reindex(columns=days, fill_value=0).sum(axis=1)
 
 
+def baseline(start, end) -> tuple[list[list[pd.Timestamp]], str]:
+    """기간 [start, end)의 비교 기준. 반환: (비교 날짜 묶음들, 이름).
+
+    - 7일 이하: 지난 4주 같은 요일 (묶음 4개의 평균)
+    - 1일에 시작하는 달 단위(진행 중인 달 포함): 지난달 같은 날짜 (묶음 1개)
+    - 그 밖: 바로 앞의 같은 길이 기간 (묶음 1개)
+    데이터 시작(4/1) 전에 걸리는 묶음은 뺀다.
+    """
+    s, e = pd.Timestamp(start).normalize(), pd.Timestamp(end).normalize()
+    n = (e - s).days
+    if n <= 0:
+        raise ValueError("기간이 비어 있습니다.")
+    cur = list(pd.date_range(s, e - pd.Timedelta(days=1), freq="D"))
+    if n <= 7:
+        base = [[d - pd.Timedelta(days=7 * k) for d in cur] for k in range(1, WEEKS + 1)]
+        name = f"지난 {WEEKS}주 같은 요일"
+    elif s.day == 1 and (e - pd.Timedelta(days=1)).to_period("M") == s.to_period("M"):
+        ps = s - pd.DateOffset(months=1)
+        if e == s + pd.DateOffset(months=1):          # 한 달 전체 → 지난달 전체
+            base = [list(pd.date_range(ps, s - pd.Timedelta(days=1), freq="D"))]
+            name = "지난달"
+        else:                                          # 진행 중인 달 → 지난달 같은 날짜까지
+            base = [list(pd.date_range(ps, ps + pd.Timedelta(days=n - 1), freq="D"))]
+            name = "지난달 같은 날짜"
+    else:
+        base = [[d - pd.Timedelta(days=n) for d in cur]]
+        name = "직전 같은 길이 기간"
+    base = [b for b in base if b[0] >= PERIOD_START]
+    return base, name
+
+
+def compare_span(t: pd.DataFrame, start, end) -> pd.DataFrame:
+    """일별 표 t의 기간 [start, end) 합계 vs baseline() 평균. 열은 compare()와 같다."""
+    cur = list(pd.date_range(pd.Timestamp(start), pd.Timestamp(end) - pd.Timedelta(days=1), freq="D"))
+    base, _ = baseline(start, end)
+    return _compare(t, cur, base)
+
+
 def compare(t: pd.DataFrame, today, length: int, first_day=None) -> pd.DataFrame:
     """일별 표 t(행 = 그룹)의 최근 length일 합계 vs 지난 4주 같은 요일 length일 합계 평균.
 
@@ -151,6 +192,10 @@ def compare(t: pd.DataFrame, today, length: int, first_day=None) -> pd.DataFrame
     first_day = pd.Timestamp(first_day) if first_day is not None else PERIOD_START
     cur, base = windows(today, length)
     base = [b for b in base if b[0] >= first_day]
+    return _compare(t, cur, base)
+
+
+def _compare(t: pd.DataFrame, cur: list, base: list[list]) -> pd.DataFrame:
     now = _sum(t, cur)
     if not base:
         out = pd.DataFrame({"현재": now})
