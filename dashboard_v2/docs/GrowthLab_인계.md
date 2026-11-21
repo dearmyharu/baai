@@ -3,6 +3,20 @@
 작성: 2026-11-21. Growth Lab 화면 개편은 팀원 담당입니다. 이 문서는 어디서부터 시작하면 되는지, 다른 화면과 무엇을 주고받는지를 정리합니다.
 전체 설계는 프로젝트 문서 `claude/재설계_2026-11-21.md`를 따릅니다.
 
+## 0. 현재 상태 (2026-11-21 갱신)
+
+- **임시 Growth Lab이 동작합니다.** 화면 구성과 UX/UI는 팀원이 바꾸면 됩니다.
+- 계산은 `engine/growth.py`에 있고 이미 동작합니다. 화면(`views/growth_lab.py`)은 이 함수들을 불러 표시만 합니다.
+  - `breakeven(m, target, lever, today)`: 본전 주문 증가율(최근 28일 기준, simulation 재계산)
+  - `profit_probability(be, m, target, today, low, mode, high, days)`: 주문 반응 가정 범위(삼각분포) + 일별 흔들림으로 이익이 날 확률
+  - `detect_days(m, target, today, effect)`: 브리핑 판정과 같은 지표(대상 매출 비중)로 효과 확인에 필요한 일수. 대부분 '확인 어려움'으로 나옴(작은 쇼핑몰 특성)
+  - `plan_row(...)`·`save_plan(row)`: 실행 계획 → promotion 한 행(로컬 CSV 또는 DB)
+  - `result_series(m, promo)`: 결과 차트 데이터. 판정은 `briefing.promo_status`
+- 임시 화면의 세 가지 모드: `lab_request` 없음 → 등록된 프로모션 목록 / `type=plan` → 수단 조정·본전·이익 확률·확인 기간·실행 계획 등록 / `type=lab` → 프로모션 결과
+- 확인: 세 모드 모두 화면 오류 없음(테스트 도구). '실행 계획 등록' 버튼은 데이터 파일을 바꾸므로 시험하지 않았습니다.
+- 바꿀 파일: `views/growth_lab.py`(화면). 계산을 바꿔야 하면 `engine/growth.py`를 고치되 함수 이름·반환 형식은 유지해 주세요.
+- 챗봇 연결(예정): Growth Lab 화면이 현재 값을 `st.session_state["growth_context"]`에 넣으면 오른쪽 챗봇이 참고해 답합니다. 챗봇이 제안한 수단·값은 `st.session_state["lab_suggestion"]`에 남고, 이를 입력칸에 반영하는 버튼은 화면 구성이 정해진 뒤에 만듭니다.
+
 ## 1. Growth Lab의 역할
 
 ver.2는 세 화면이 역할을 나눕니다.
