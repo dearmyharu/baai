@@ -31,8 +31,26 @@ def normalize_lever(lever: dict) -> dict:
     max_value = 100000 if policy == "discount" and kind == "fixed" else 30000 if policy == "shipping" else 50
     if not 0 <= abs(value) <= max_value:
         raise ValueError(f"입력 가능한 범위는 0~{max_value:,}입니다.")
+    # Coupon-only optional conditions: 0 means no minimum / no cap.
+    # All eligibility amounts use the SELECTED category basket subtotal.
+    minimum = 0.0
+    cap = 0.0
+    if policy == "discount":
+        for key, label in (("minimum_order_amount", "최소주문금액"),
+                           ("maximum_discount_amount", "최대 할인액")):
+            try:
+                amount = float(lever.get(key, 0) or 0)
+            except (TypeError, ValueError):
+                raise ValueError(f"{label}에 올바른 숫자를 입력해 주십시오.") from None
+            if not np.isfinite(amount) or not 0 <= amount <= 100000000:
+                raise ValueError(f"{label}은 0~100,000,000원이어야 합니다.")
+            if key == "minimum_order_amount":
+                minimum = amount
+            else:
+                cap = amount
     return {"policy": policy, "value": abs(value),
-            "discount_type": kind if policy == "discount" else "none"}
+            "discount_type": kind if policy == "discount" else "none",
+            "minimum_order_amount": minimum, "maximum_discount_amount": cap}
 
 
 def _financial_rows(rows: pd.DataFrame) -> pd.DataFrame:
@@ -67,12 +85,21 @@ def replay(m: dict, category: str, lever: dict, start, end) -> dict:
         changed["gross"] = original["gross"] - selected_gross * lever["value"] / 100
         changed["discount"] = original["discount"] - existing_category_coupon
     elif lever["policy"] == "discount":
+        # Qualifying minimum: selected-category item subtotal ONLY (before
+        # the new coupon). Products outside the category cannot fill the gap.
+        qualified = selected_gross >= lever["minimum_order_amount"]
         if lever["discount_type"] == "fixed":
             new_coupon = np.minimum(selected_gross, lever["value"])
         else:
             new_coupon = selected_gross * lever["value"] / 100
-        # One coupon per order, not one coupon per line.
-        changed["discount"] = original["discount"] - existing_category_coupon + new_coupon
+        cap = lever["maximum_discount_amount"]
+        if cap > 0:
+            new_coupon = np.minimum(new_coupon, cap)
+        new_coupon = np.minimum(new_coupon, selected_gross)
+        # Ineligible orders retain their original category coupon instead of
+        # erasing it. Eligible orders REPLACE the original coupon once/basket.
+        applied_coupon = new_coupon.where(qualified, existing_category_coupon)
+        changed["discount"] = original["discount"] - existing_category_coupon + applied_coupon
     else:
         # Threshold is based solely on items in the selected category.
         # Existing category coupons already reflected in that subtotal.
@@ -97,7 +124,7 @@ def replay(m: dict, category: str, lever: dict, start, end) -> dict:
     if lever["policy"] == "price":
         selected_net_after = (selected_gross * (1 - lever["value"] / 100)).clip(lower=0)
     elif lever["policy"] == "discount":
-        selected_net_after = (selected_gross - new_coupon).clip(lower=0)
+        selected_net_after = (selected_gross - applied_coupon).clip(lower=0)
     else:
         selected_net_after = selected_net_before.copy()
     for values, selected_net in ((before, selected_net_before), (after, selected_net_after)):
@@ -171,6 +198,7 @@ def monte_carlo(m: dict, category: str, lever: dict, today, days: int,
     growth = rng.triangular(low, mode, high, n) if high > low else np.full(n, mode)
     before_rev = before["revenue"].to_numpy()[idx].sum(axis=1)
     before_profit = before["profit"].to_numpy()[idx].sum(axis=1)
+    before_margin = np.divide(before_profit, before_rev, out=np.full(n, np.nan), where=before_rev > 0)
     after_rev = after["revenue"].to_numpy()[idx].sum(axis=1) * (1 + growth)
     after_profit = after["profit"].to_numpy()[idx].sum(axis=1) * (1 + growth)
     margin = np.divide(after_profit, after_rev, out=np.full(n, np.nan), where=after_rev > 0)
@@ -186,6 +214,7 @@ def monte_carlo(m: dict, category: str, lever: dict, today, days: int,
         "margin_p50": float(np.nanpercentile(margin, 50)),
         "margin_p90": float(np.nanpercentile(margin, 90)),
         "baseline_sales_p50": float(np.percentile(before_rev, 50)),
+        "baseline_margin_p50": float(np.nanpercentile(before_margin, 50)),
         "baseline_profit_p50": float(np.percentile(before_profit, 50)),
         "profit_delta_p10": float(np.percentile(after_profit - before_profit, 10)),
         "profit_delta_p50": float(np.percentile(after_profit - before_profit, 50)),
