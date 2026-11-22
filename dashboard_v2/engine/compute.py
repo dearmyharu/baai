@@ -350,7 +350,8 @@ def location(m: dict, q: Query, today) -> Result:
     chart = {"kind": "diverging_bar", "data": chart_df, "x": "변화", "y": AXES[axis], "unit": unit}
     return Result("location", f"{scope.label} {measure} 변화 위치 · {AXES[axis]}별",
                   scope.tags(wname, f"비교: {bname}"),
-                  {"target": scope.label, "measure": measure, "axis": AXES[axis], "direction": "down" if down else "up",
+                  {"target": scope.label, "measure": measure, "axis": AXES[axis], "axis_key": axis,
+                   "direction": "down" if down else "up",
                    "total": total, "top": top, "top_share": top_share, "window": wname, "base_name": bname},
                   facts, tbl, chart, notes, axes_left=[a for a in _axes_for(scope.kind) if a != axis])
 
