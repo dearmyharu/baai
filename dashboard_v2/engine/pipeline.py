@@ -33,7 +33,8 @@ def _compute(question: str, q: Query, why: bool, notes: list[str], m: dict, toda
     except ValueError as e:                  # 계산 함수가 거절한 입력: 그 이유를 그대로 안내
         return Outcome(question, A.message(str(e)), "message", q)
     card = A.card(r, why=why)
-    if notes:
+    notes = [n for n in notes if not (("상품매출(쿠폰 차감" in n) and any("상품매출(쿠폰 차감" in x for x in r.notes))]
+    if notes:                                # 계산 결과에 같은 안내가 있으면 한 번만
         card.note = " ".join(notes + ([card.note] if card.note else []))
     return Outcome(question, card, "answer", q, r)
 
