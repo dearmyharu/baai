@@ -139,6 +139,8 @@ CREATE TABLE IF NOT EXISTS promotion (
     discount_pct    numeric,
     discount_type  text,
     discount_value numeric,
+    minimum_order_amount numeric DEFAULT 0,
+    maximum_discount_amount numeric DEFAULT 0,
     shipping_threshold numeric,
     order_response_low_pct numeric,
     order_response_mode_pct numeric,
@@ -165,3 +167,6 @@ ALTER TABLE promotion ADD COLUMN IF NOT EXISTS shipping_threshold numeric;
 ALTER TABLE promotion ADD COLUMN IF NOT EXISTS order_response_low_pct numeric;
 ALTER TABLE promotion ADD COLUMN IF NOT EXISTS order_response_mode_pct numeric;
 ALTER TABLE promotion ADD COLUMN IF NOT EXISTS order_response_high_pct numeric;
+
+ALTER TABLE promotion ADD COLUMN IF NOT EXISTS minimum_order_amount numeric DEFAULT 0;
+ALTER TABLE promotion ADD COLUMN IF NOT EXISTS maximum_discount_amount numeric DEFAULT 0;
