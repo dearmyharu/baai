@@ -48,19 +48,19 @@ REGION_WORDS = {  # 실제 이름 → 줄임말
 FILTER_WORDS["regions"] = {k: [k] + v for k, v in REGION_WORDS.items()}
 
 # 변화 위치 축: 키 → 질문 속 말 (근거가 없으면 축은 기본값으로 정한다)
-AXIS_WORDS = {
+AXIS_WORDS = {   # 구분 '이름'만 (서울·카카오 같은 값은 고객 조건이지 나눠 보기가 아니다)
     "category": ["카테고리", "분야", "부문"],
-    "product": ["상품", "제품", "품목", "메뉴", "뭐가", "어떤 게", "무엇이"],
-    "customer_type": ["첫 구매", "첫구매", "기존 고객", "신규 고객", "재구매", "고객별", "고객 유형", "고객 구분"],
-    "visitor_type": ["신규 방문", "재방문", "처음 방문", "방문자"],
-    "path": ["큐레이션", "경로", "일반 탐색", "탐색", "테마"],
-    "weekday": ["요일", "주말", "평일"],
-    "daypart": ["시간대", "몇 시", "아침", "점심", "저녁", "오후", "새벽", "심야", "밤"],
-    "gender": ["성별", "남녀", "남성", "여성", "남자", "여자"],
-    "age_group": ["연령", "나이", "연령대", r"\d0대"],
-    "region": ["지역", "시도", "시·도"] + [w for ws in REGION_WORDS.values() for w in ws],
-    "signup_channel": ["가입 수단", "가입 경로", "가입 방법", "카카오", "네이버", "구글", "이메일"],
-    "grade_at_order": ["등급", "vip", "골드", "실버", "브론즈"],
+    "product": ["상품", "제품", "품목"],
+    "customer_type": ["고객별", "고객 유형", "고객 구분", "첫 구매", "첫구매", "기존 고객", "신규 고객", "재구매"],
+    "visitor_type": ["신규 방문", "재방문", "방문 구분", "방문자"],
+    "path": ["경로별", "쇼핑몰 안 경로", "큐레이션 경유", "일반 탐색"],
+    "weekday": ["요일"],
+    "daypart": ["시간대", "몇 시", "시간별"],
+    "gender": ["성별", "남녀"],
+    "age_group": ["연령", "나이", "연령대"],
+    "region": ["지역", "시도", "시·도"],
+    "signup_channel": ["가입 수단", "가입 경로", "가입 방법", "가입 채널"],
+    "grade_at_order": ["등급"],
 }
 
 # 데이터에 없는 항목: 이름 → (질문 속 말 정규식, 대신 볼 수 있는 것)
@@ -86,6 +86,29 @@ for _k, (_p, _alt) in list(NOT_IN_DATA.items()):
 
 HAVE_IN_DATA = "성별·연령대·지역·회원가입 수단·회원 등급·첫 구매/기존 고객·신규 가입, 카테고리·상품, 쇼핑몰 안 경로(큐레이션/일반 탐색), 요일·시간대"
 
+# 일반어: 상품 이름을 찾을 때 근거에서 뺀다
+STOP_WORDS = {"매출", "상품", "제품", "품목", "어때", "어때요", "얼마", "얼마야", "보여줘", "알려줘", "1위", "순위", "제일",
+              "가장", "많이", "잘", "팔리는", "팔린", "판매", "주문", "수량", "이익", "이익률", "추이", "최근", "지난주",
+              "어제", "요즘", "카테고리", "쪽", "중", "중에서", "에서", "은", "는", "이", "가", "을", "를", "의"}
+# '데이터에 없음'으로 인정하지 않는 말 (사전에 있는 말: 지표·구매 단계·시점)
+KNOWN_TERMS = ["매출", "주문", "판매", "이익", "객단가", "수량", "전환", "장바구니", "구매", "클릭", "방문", "세션", "단계",
+               "테마", "큐레이션", "프로모션", "할인", "쿠폰", "무료배송", "배송비", "순위", "비중", "추이", "지난번", "저번",
+               "예전", "요즘", "최근", "평소"]
+
+# 질문 말투(의문사·서술어 조각): '데이터에 없음' 항목에서 빼고 판단한다
+GENERIC_RE = re.compile(r"^(?:왜|어떻게|어때|어떤|어떰|지금|현재|요즘|좀|진짜|결과|상황|얼마나|얼마|뭐|무슨|언제)$|"
+                        r"(?:었어|았어|졌어|었나|았나|있어|있나|되고|되어|됐어|해|돼|나요|니|까|야|지|요|음|줘|줘요|봐|봐줘)$")
+
+
+def generic_only(text: str) -> bool:
+    """의문사·서술어 조각만으로 된 말이면 True (예: '왜 늘었어', '지금, 어떻게 되고 있어?')."""
+    toks = [t for t in re.split(r"[\s,?!.]+", text or "") if t]
+    return all(GENERIC_RE.search(t) for t in toks)
+
+
+# 이어지는 질문의 형태: '그럼 수산은?', '고객별로는?', '지난주는?' 처럼 짧거나 이어 말하는 말로 시작
+FOLLOW_RE = re.compile(r"^\s*(?:그럼|그러면|그건|그거|거기|이번엔|이건|저건|그 중|그중)|^\S{1,8}(?:은|는|도|로는|별로는|만)\??\s*$")
+
 WHY_RE = re.compile(r"왜|이유|원인|때문|어째서|뭣\s*때문")
 
 
@@ -108,6 +131,38 @@ def words_match(evidence: str, words: list[str]) -> bool:
         elif norm(w) and norm(w) in e:
             return True
     return False
+
+
+def known_term(text: str, categories: list[str]) -> bool:
+    """사전에 있는 말(카테고리·고객 조건·구분 이름·지표·시점)이 들어 있으면 True."""
+    words = list(KNOWN_TERMS) + [w for c in categories for w in category_words(c)]
+    words += [w for vals in FILTER_WORDS.values() for ws in vals.values() for w in ws]
+    words += [w for ws in AXIS_WORDS.values() for w in ws]
+    return words_match(text, words)
+
+
+def product_tokens(names: list[str], categories: list[str]) -> set[str]:
+    """상품 이름을 이루는 단어 중 상품을 가리킬 수 있는 것(규격·맛·카테고리 말 제외)."""
+    cat_words = {norm(w) for c in categories for w in category_words(c)}
+    out = set()
+    for n in names:
+        for t in re.split(r"[\s()/]+", n):
+            t = norm(t)
+            if len(t) >= 2 and t not in cat_words and not re.search(r"\d|개입|입$|맛$|형$|용$", t) and t not in STOP_WORDS:
+                out.add(t)
+    return out
+
+
+def category_in(question: str, categories: list[str]) -> str | None:
+    """질문에 카테고리 말이 하나의 카테고리만 가리키면 그 카테고리 (AI가 카테고리를 비웠을 때)."""
+    hits = [c for c in categories if words_match(question, category_words(c))]
+    return hits[0] if len(hits) == 1 else None
+
+
+def axis_in(question: str) -> str | None:
+    """질문에 구분 이름이 하나만 있으면 그 축 (AI가 축을 비웠을 때 코드가 찾는다)."""
+    hits = [k for k, ws in AXIS_WORDS.items() if k not in ("category", "product") and words_match(question, ws)]
+    return hits[0] if len(hits) == 1 else None
 
 
 def not_in_data(question: str) -> tuple[str, str] | None:
