@@ -255,9 +255,12 @@ def _with_axis(scope: Scope, axis: str) -> tuple[pd.DataFrame, str]:
         return it, "category"
     if axis == "product":
         return it, "product_name"
-    if axis in ("customer_type", "visitor_type"):
-        it[axis] = it[axis].fillna("확인 불가")
-        return it, axis
+    if axis == "customer_type":
+        it["고객 구분"] = it["customer_type"].fillna("확인 불가")
+        return it, "고객 구분"
+    if axis == "visitor_type":
+        it["방문 구분"] = it["visitor_type"].map({"NEW": "신규 방문", "RETURNING": "재방문"}).fillna("확인 불가")
+        return it, "방문 구분"
     if axis == "path":
         it["경로"] = it["path"].map(PATH_NAME).fillna("확인 불가")
         return it, "경로"
