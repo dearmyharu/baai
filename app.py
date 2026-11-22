@@ -7,9 +7,7 @@ from pathlib import Path
 
 import streamlit as st
 
-ROOT = Path(__file__).resolve().parent
-sys.path.insert(0, str(ROOT))
-sys.path.insert(0, str(ROOT / "dashboard_v2"))  # Growth Lab and Morning Briefing use v2 engine
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 st.set_page_config(page_title="그로스 대시보드", page_icon="🥗", layout="wide")
 
@@ -22,11 +20,7 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-v2_home = st.Page("dashboard_v2/views/home.py", title="아침 브리핑", icon=":material/today:")
-v2_lab = st.Page("dashboard_v2/views/growth_lab.py", title="Growth Lab", icon=":material/science:")
-
 pages = {
-    "오늘": [v2_home],
     "분석": [
         st.Page("views/overview.py", title="통합 현황", icon=":material/dashboard:", default=True),
         st.Page("views/curation.py", title="상품·큐레이션", icon=":material/storefront:"),
@@ -34,24 +28,15 @@ pages = {
         st.Page("views/retention.py", title="고객·리텐션", icon=":material/group:"),
     ],
     "실행": [
-        v2_lab,
+        st.Page("views/growth_lab.py", title="Growth Lab", icon=":material/science:"),
     ],
 }
 page = st.navigation(pages)
 st.session_state.growth_active = page.title == "Growth Lab"
 if st.session_state.pop("goto_growth", False):
-    st.switch_page(v2_lab)
-# Morning Briefing v2 sets this when opening an existing promotion result.
-if st.session_state.pop("goto", None) == "lab":
-    st.switch_page(v2_lab)
+    st.switch_page("views/growth_lab.py")
 if st.session_state.pop("goto_overview", False):      # 질문 대시보드의 '이 기간으로 통합 현황 열기'
     st.switch_page("views/overview.py")
-
-# V2 briefing and Growth Lab are currently independent of the chatbot.
-# Keep older analysis pages and their chat integration unchanged.
-if page.title in ("아침 브리핑", "Growth Lab"):
-    page.run()
-    st.stop()
 
 # AI 분석가: 별도 화면이 아니라 모든 화면 오른쪽에 붙은 채팅 패널 (사이드바에서 열고 닫기)
 show_chat = st.sidebar.toggle("AI 분석가 열기", value=True, key="chat_open",
