@@ -55,6 +55,8 @@ def show_result(pid: str):
         "수단": str(saved["lever"]),
         "할인 방식": str(saved.get("discount_type", "") or "기존 등록 데이터"),
         "할인 조건": str(saved.get("discount_value", "") or saved.get("discount_pct", "")),
+        "최소주문금액": str(saved.get("minimum_order_amount", 0) or 0) + "원 (0원은 제한 없음)",
+        "최대 할인액": str(saved.get("maximum_discount_amount", 0) or 0) + "원 (0원은 제한 없음)",
         "배송 기준": str(saved.get("shipping_threshold", "") or "—"),
         "주 지표": str(saved["primary_metric"]),
         "짝 지표": str(saved["guard_metric"]),
