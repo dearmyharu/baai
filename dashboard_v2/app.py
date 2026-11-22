@@ -69,10 +69,14 @@ main, side = st.columns([7, 3], gap="medium")
 with side:                 # 패널을 먼저 그린다: 화면 코드가 st.stop()으로 일찍 끝나도 패널은 남는다
     chat_panel.render()
 with main:
-    result, q = chat_panel.dash()
-    if result is not None:
-        # 질문 대시보드를 화면 자리에 띄운다. 원래 화면은 숨겨서 계속 그린다(사이드바 입력값 유지)
-        popup.render(result, q, chat_panel.close_dash, key=f"main_{ss.get('active_dash')}")
+    # Chat panel and question dashboard are edited by another team member.
+    # A deployed app can briefly load a stale module version during reload.
+    # Keep all ordinary dashboards working even when optional chat APIs differ.
+    dash_fn = getattr(chat_panel, "dash", None)
+    close_fn = getattr(chat_panel, "close_dash", None)
+    result, q = dash_fn() if callable(dash_fn) else (None, None)
+    if result is not None and callable(close_fn):
+        popup.render(result, q, close_fn, key=f"main_{ss.get('active_dash')}")
         st.markdown("<style>.st-key-page_hidden {display: none;}</style>", unsafe_allow_html=True)
         with st.container(key="page_hidden"):
             page.run()
