@@ -62,6 +62,41 @@ class CategoryPromotionTests(unittest.TestCase):
         self.assertEqual(r["after"].loc["meat_with_old_coupon", "gross"], 22000.)
         self.assertEqual(r["after"].loc["meat_with_old_coupon", "discount"], 0.)
 
+
+    def test_coupon_minimum_uses_selected_category_only(self):
+        r = self.replay({"policy": "discount", "discount_type": "fixed",
+                         "value": 2000, "minimum_order_amount": 20000})
+        # Mixed order: 15k meat + 5k other does NOT meet 20k minimum.
+        self.assertEqual(r["after"].loc["mixed", "discount"], 0.)
+        self.assertEqual(r["after"].loc["meat_only", "discount"], 2000.)
+        # Ineligible existing coupon is preserved (not zeroed or replaced).
+        r2 = self.replay({"policy": "discount", "discount_type": "fixed",
+                          "value": 2000, "minimum_order_amount": 21000})
+        self.assertEqual(r2["after"].loc["meat_with_old_coupon", "discount"], 1000.)
+
+    def test_coupon_maximum_discount_cap(self):
+        r = self.replay({"policy": "discount", "discount_type": "rate",
+                         "value": 20, "maximum_discount_amount": 1000})
+        # 20% of 15k is 3k but is capped to 1k per order.
+        self.assertEqual(r["after"].loc["mixed", "discount"], 1000.)
+        fixed = self.replay({"policy": "discount", "discount_type": "fixed",
+                             "value": 4000, "maximum_discount_amount": 1500})
+        self.assertEqual(fixed["after"].loc["meat_only", "discount"], 1500.)
+
+    def test_coupon_zero_conditions_mean_unrestricted(self):
+        basic = self.replay({"policy": "discount", "discount_type": "rate",
+                             "value": 10})
+        explicit = self.replay({"policy": "discount", "discount_type": "rate",
+                                "value": 10, "minimum_order_amount": 0,
+                                "maximum_discount_amount": 0})
+        pd.testing.assert_frame_equal(basic["after"], explicit["after"])
+
+    def test_invalid_coupon_conditions_rejected(self):
+        for key in ("minimum_order_amount", "maximum_discount_amount"):
+            with self.assertRaises(ValueError):
+                GP.normalize_lever({"policy": "discount", "discount_type": "rate",
+                                    "value": 10, key: -1})
+
     def test_break_even_and_totals_consistent(self):
         r = self.replay({"policy": "discount", "discount_type": "fixed", "value": 2000})
         be = GP.break_even(r)
