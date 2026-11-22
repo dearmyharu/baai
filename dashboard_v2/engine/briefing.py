@@ -20,8 +20,11 @@ import re
 import numpy as np
 import pandas as pd
 
-SHIP_COST = 3000          # 판매자 배송 원가(주문당, 가정값)
-WEEKS = 4                 # '평소' = 최근 4주 같은 요일
+from . import basis as BASIS
+from .query import Query
+
+SHIP_COST = BASIS.SHIP_COST   # 판매자 배송 원가(주문당, 가정값) — 기준은 basis.py
+WEEKS = BASIS.WEEKS           # '평소' = 최근 4주 같은 요일
 
 # 할 일 규칙 기준값. 2026-11-20 실제 9월 데이터로 맞춤(eval/briefing_tune.py): 하루 평균 2.8건, 0건인 날 없음.
 # ④ 쿠폰 의존은 이 데이터에서 +10%p로 낮춰도 한 번도 걸리지 않음(쿠폰 사용 비중이 안정적).
@@ -62,54 +65,15 @@ def _won(v) -> str:
 # ---------------------------------------------------------------------------
 # 이익 장부 (완료 주문)
 # ---------------------------------------------------------------------------
-def ledger(m: dict, ship_cost: float = SHIP_COST) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """완료 주문 단위 장부와, 배송 부담을 상품금액 비율로 나눠 넣은 주문 상품 장부."""
-    it = m["items"]
-    it = it[it["order_status"].eq("COMPLETED")].copy()
-    it["cost"] = it["quantity"] * it["cost_price"]
-    o = m["orders"]
-    o = o[o["order_status"].eq("COMPLETED")].copy()
-    agg = it.groupby("order_id").agg(gross=("sales_amount", "sum"), discount=("allocated_coupon_discount", "sum"),
-                                     net=("net_sales", "sum"), cost=("cost", "sum"))
-    o = o.join(agg, on="order_id")
-    o[["gross", "discount", "net", "cost"]] = o[["gross", "discount", "net", "cost"]].fillna(0)
-    o["shipping_income"] = (o["total_amount"] - o["net"]).clip(lower=0)
-    o["ship_burden"] = ship_cost - o["shipping_income"]
-    o["profit"] = o["total_amount"] - o["cost"] - ship_cost
-    o["date"] = o["order_time"].dt.normalize()
-    share = it["net_sales"] / it["order_id"].map(o.set_index("order_id")["net"]).replace(0, pd.NA)
-    it["ship_burden"] = share.fillna(0).astype(float) * it["order_id"].map(o.set_index("order_id")["ship_burden"])
-    it["profit"] = it["net_sales"] - it["cost"] - it["ship_burden"]
-    it["date"] = it["order_time"].dt.normalize()
-    return o, it
+ledger = BASIS.ledger
 
 
 def _same_weekdays(day: pd.Timestamp, weeks: int = WEEKS) -> list[pd.Timestamp]:
     return [day - pd.Timedelta(days=7 * k) for k in range(1, weeks + 1)]
 
 
-def _level(value, base: list) -> str:
-    if not base:
-        return "비교 불가"
-    if value < min(base):
-        return "평소 대비 낮음"
-    if value > max(base):
-        return "평소 대비 높음"
-    return "평소 수준"
-
-
-LEVEL_BAND = 0.10   # 최근 3일 판정: 평소(지난 4주 같은 요일 3일 평균) 대비 ±10% 밖이면 낮음·높음
-                    # 근거: 9월 데이터에서 3일 매출 비율의 흔들림이 약 ±8% (2026-11-21 확인)
-
-
-def _level3(value, mean) -> str:
-    if not mean:
-        return "비교 불가"
-    if value < mean * (1 - LEVEL_BAND):
-        return "평소 대비 낮음"
-    if value > mean * (1 + LEVEL_BAND):
-        return "평소 대비 높음"
-    return "평소 수준"
+LEVEL_BAND = BASIS.BAND
+_level3 = BASIS.level
 
 
 # ---------------------------------------------------------------------------
@@ -215,9 +179,7 @@ def movers(it: pd.DataFrame, day: pd.Timestamp, n: int = 3) -> dict:
 # 4. 오늘 할 일
 # ---------------------------------------------------------------------------
 def _windows(day: pd.Timestamp, length: int) -> tuple[list, list[list]]:
-    cur = list(pd.date_range(day - pd.Timedelta(days=length - 1), day, freq="D"))
-    base = [[d - pd.Timedelta(days=7 * k) for d in cur] for k in range(1, WEEKS + 1)]
-    return cur, base
+    return BASIS.windows(day + pd.Timedelta(days=1), length)
 
 
 def _win_sum(t: pd.DataFrame, days: list) -> pd.Series:
@@ -251,19 +213,9 @@ def _spike_profile(o_all: pd.DataFrame, it: pd.DataFrame, m: dict, product: str,
         fc = od.loc[od["is_first_purchase"].fillna(0).astype(float).eq(1), "customer_id"]
         c = fc.map(cust.set_index("customer_id")["signup_channel"]).value_counts()
         chan = c.index[0] if len(c) else None
-    if top_share >= 0.5 and n_cust <= 2:
-        guess = "대량 주문"
-    elif n_orders >= 3 and first / max(n_cust, 1) >= 0.5:
-        guess = "바이럴·외부 유입"
-    elif coupon >= 0.7:
-        guess = "쿠폰 영향"
-    elif best >= 0.6 and n_orders >= 3:
-        guess = "특정 시간대 집중(방송·게시물 여부 확인 필요)"
-    else:
-        guess = "특이 패턴 없음"
     return {"orders": n_orders, "customers": n_cust, "first": first, "coupon_share": coupon,
             "top_customer_share": top_share, "hour_from": best_h, "hour_to": best_to, "hour_share": best,
-            "channel": chan, "guess": guess}
+            "channel": chan}
 
 
 def todos(m: dict, day: pd.Timestamp, th: dict | None = None, ship_cost: float = SHIP_COST) -> list[dict]:
@@ -297,13 +249,13 @@ def todos(m: dict, day: pd.Timestamp, th: dict | None = None, ship_cost: float =
                        f"주문 {prof['orders']}건 · 구매 고객 {prof['customers']}명(첫 구매 {prof['first']}명) · "
                        f"쿠폰 사용 {prof['coupon_share']:.0%}" +
                        (f" · {prof['hour_from']}~{prof['hour_to']}시에 {prof['hour_share']:.0%}"
-                        if prof["hour_from"] is not None else ""),
-                       f"주문 패턴 추정: {prof['guess']}"]
+                        if prof["hour_from"] is not None else "")]
             out.append({"kind": "spike", "key": f"product:{p}", "tone": "opportunity", "priority": 0,
-                        "title": f"{p} 전일 주문 급증(평소 대비 {ny_[p] / max(nmean[p], 0.5):.1f}배) 원인 확인",
+                        "title": f"{p} 전일 주문 급증(평소 대비 {ny_[p] / max(nmean[p], 0.5):.1f}배)",
                         "reasons": reasons, "impact": float(s[day][p] - smean[p]), "profile": prof,
-                        "actions": [{"type": "ask", "label": "구매 고객 분석",
-                                     "q": f"{_d(day)} {p} 구매 고객의 구성(첫 구매/기존, 가입 경로, 연령대)을 분석해 주세요"}]})
+                        "actions": [{"type": "ask", "label": "구매 고객 구성 보기",
+                                     "query": Query("location", product=p, axis="customer_type",
+                                                    period=(day, day + pd.Timedelta(days=1)))}]})
             spiked.add(p)
         elif qmean[p] >= th["zero_base_qty"] and qy[p] == 0:
             out.append({"kind": "spike", "key": f"product:{p}", "tone": "problem", "priority": 0,
@@ -324,12 +276,11 @@ def todos(m: dict, day: pd.Timestamp, th: dict | None = None, ship_cost: float =
             pdiff = (_base_mean(pt, base3) - _win_sum(pt, cur3)).sort_values(ascending=False)
             top = pdiff.index[0] if len(pdiff) and pdiff.iloc[0] > 0 else None
             out.append({"kind": "drop", "key": f"category:{c}", "tone": "problem", "priority": 1,
-                        "title": f"{c} 카테고리 매출 감소 원인 확인",
+                        "title": f"{c} 카테고리 매출 감소",
                         "reasons": [f"{span3} 매출 {_won(v)} · 평소 {_won(b)} ({(v / b - 1):+.0%})"] +
                                    ([f"감소 폭 최대 상품: {top} (−{_won(pdiff.iloc[0])})"] if top else []),
                         "impact": float((b - v) / 3),
-                        "actions": [{"type": "ask", "label": "AI 분석가 원인 분석",
-                                     "q": f"최근 7일 {c} 카테고리에서 매출이 줄어든 상품은? 첫 구매·기존 고객별로도 보여 주세요"}]})
+                        "actions": [{"type": "ask", "label": "변화 위치 보기", "query": Query("location", category=c)}]})
             flagged_cat.add(c)
     q3, qb3 = _win_sum(q, cur3), _base_mean(q, base3)
     s3, sb3 = _win_sum(s, cur3), _base_mean(s, base3)
@@ -340,18 +291,18 @@ def todos(m: dict, day: pd.Timestamp, th: dict | None = None, ship_cost: float =
         if (cat_of.get(p) not in flagged_cat and sb3[p] > 0 and (sb3[p] - s3[p]) / sb3[p] >= th["drop_pct"]
                 and (sb3[p] - s3[p]) / 3 >= min_day):
             out.append({"kind": "drop", "key": f"product:{p}", "tone": "problem", "priority": 1,
-                        "title": f"{p} 판매 감소 원인 확인",
+                        "title": f"{p} 판매 감소",
                         "reasons": [f"{span3} {q3[p]:.0f}개 · 평소 {qb3[p]:.1f}개 ({(q3[p] / qb3[p] - 1):+.0%})"],
                         "impact": float((sb3[p] - s3[p]) / 3),
-                        "actions": [{"type": "ask", "label": "AI 분석가 원인 분석",
-                                     "q": f"최근 7일 {p} 판매 수량을 첫 구매·기존 고객별, 요일별로 보면?"}]})
+                        "actions": [{"type": "ask", "label": "변화 위치 보기",
+                                     "query": Query("location", product=p, axis="customer_type")}]})
         elif q3[p] >= th["rise_x"] * qb3[p] and (s3[p] - sb3[p]) / 3 >= min_day:
             out.append({"kind": "rise", "key": f"product:{p}", "tone": "opportunity", "priority": 1,
                         "title": f"{p} 판매 증가 · 노출 확대 검토",
                         "reasons": [f"{span3} {q3[p]:.0f}개 · 평소 {qb3[p]:.1f}개 ({q3[p] / qb3[p]:.1f}배)"],
                         "impact": float((s3[p] - sb3[p]) / 3),
-                        "actions": [{"type": "ask", "label": "구매 고객 분석",
-                                     "q": f"{span3} {p} 구매 고객의 구성을 분석하고 평소와 달라진 점을 알려 주세요"}]})
+                        "actions": [{"type": "ask", "label": "구매 고객 구성 보기",
+                                     "query": Query("location", product=p, axis="customer_type")}]})
 
     # ③ 남는 게 적은 인기 상품 (최근 7일)
     lo7 = day - pd.Timedelta(days=6)
@@ -407,8 +358,7 @@ def todos(m: dict, day: pd.Timestamp, th: dict | None = None, ship_cost: float =
                     "title": "취소·환불 주문 확인",
                     "reasons": [f"전일 {ny}건 ({_won(by_day['amt'].get(day, 0))}) · 최근 4주 동일 요일 최대 {bmax}건"],
                     "impact": float(by_day["amt"].get(day, 0)),
-                    "actions": [{"type": "ask", "label": "AI 분석가 조회",
-                                 "q": f"{_d(day)} 취소·환불 주문을 상태별로 조회해 주세요"}]})
+                    "actions": []})
 
     promos = promo_status(m, day, it)
     out = _promo_context(out, promos, day, it)
@@ -430,7 +380,7 @@ def _promo_context(items: list[dict], promos: list[dict], day: pd.Timestamp, it:
             continue
         if cat in recent and x["kind"] == "drop":
             p = recent[cat]
-            x = {**x, "reasons": x["reasons"] + [f"{p['name']} 종료({_d(p['end'])}) 직후입니다. 할인 기간에 앞당겨 산 영향일 수 있습니다(가설)"]}
+            x = {**x, "reasons": x["reasons"] + [f"{p['name']} 종료({_d(p['end'])}) 후 {(day - p['end']).days}일째입니다."]}
         out.append(x)
     return out
 
@@ -582,8 +532,8 @@ def rank(items: list[dict], k: int) -> list[dict]:
 # ---------------------------------------------------------------------------
 def summary(y: dict, pace: dict, items: list[dict]) -> str:
     parts = []
-    lvl = {"평소 대비 낮음": "평소 대비 낮은 수준입니다", "평소 대비 높음": "평소 대비 높은 수준입니다",
-           "평소 수준": "평소 수준입니다"}.get(y["level"], "")
+    lvl = {BASIS.LEVEL_LOW: "평소보다 낮은 수준입니다", BASIS.LEVEL_HIGH: "평소보다 높은 수준입니다",
+           BASIS.LEVEL_NORMAL: "평소 수준입니다"}.get(y["level"], "")
     parts.append(f"최근 3일({_d(y['span3'][0])}~{_d(y['span3'][1])}) 매출은 {_won(y['revenue3'])}으로 {lvl}." if lvl
                  else f"최근 3일 매출은 {_won(y['revenue3'])}입니다.")
     parts.append(f"금일 확인 사항은 {len(items)}건입니다." if items else "금일 특이 사항은 없습니다.")

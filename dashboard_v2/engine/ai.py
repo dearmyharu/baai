@@ -1,26 +1,48 @@
-"""OpenAI(GPT) 연결: core/llm.py가 OPENAI_API_KEY를 쓸 때 부르는 부분.
+"""AI 호출: 질문 → 질의서 초안(JSON) 한 가지만. 도구 호출·답변 작성은 하지 않는다.
 
-질문 답변·Growth Lab 초안의 흐름(도구 고르기 → 실행 → 설명, 지어낸 숫자 차단)은 Gemini와 같고,
-API 형식(Chat Completions, function calling, JSON schema 응답)만 다르다. 표준 라이브러리만 사용.
+OpenAI(GPT) Chat Completions + JSON schema(strict). 표준 라이브러리만 사용.
+키: Streamlit Secrets 또는 환경변수 OPENAI_API_KEY. 모델 고정: OPENAI_MODEL (없으면 쓸 수 있는 가장 가벼운 최신 모델).
 """
 from __future__ import annotations
 
 import copy
 import http.client
 import json
+import os
 import re
 import socket
 import time
 import urllib.error
 import urllib.request
-from typing import Callable
-
-from . import llm as L
-from .llm import LLMError
 
 API = "https://api.openai.com/v1"
 _MODEL_CACHE: dict[str, str] = {}
 _UNAVAILABLE: dict[str, set] = {}
+
+
+class LLMError(Exception):
+    """사용자에게 그대로 보여줄 수 있는 오류. code: HTTP 상태(없으면 0, 시간 초과는 -1), detail: 원문 일부."""
+
+    def __init__(self, msg, code=0, detail=""):
+        super().__init__(msg)
+        self.code, self.detail = code, detail
+
+
+def _setting(name: str) -> str:
+    """Streamlit Secrets 또는 환경변수."""
+    try:
+        import streamlit as st
+        v = st.secrets.get(name)
+        if v:
+            return str(v).strip()
+    except Exception:  # noqa: BLE001  Secrets가 없는 실행 환경
+        pass
+    return (os.getenv(name) or "").strip()
+
+
+def api_key() -> str | None:
+    v = _setting("OPENAI_API_KEY")
+    return v if v and "붙여넣기" not in v else None
 
 
 # ---------------------------------------------------------------------------
@@ -90,7 +112,7 @@ def candidates(key: str) -> list[str]:
 
 
 def pick_model(key: str) -> str:
-    fixed = L._setting("OPENAI_MODEL")
+    fixed = _setting("OPENAI_MODEL")
     if fixed:
         return fixed
     if key in _MODEL_CACHE:
@@ -140,7 +162,7 @@ def _chat(key: str, model: str, body: dict) -> dict:
 
 def _chat_any(key: str, model: str, body: dict) -> tuple[dict, str]:
     """모델이 거절되면(404) 다음 후보로 바꿔 다시 부른다. (응답, 실제 쓴 모델)"""
-    fixed = bool(L._setting("OPENAI_MODEL"))
+    fixed = bool(_setting("OPENAI_MODEL"))
     for _ in range(4):
         try:
             return _chat(key, model, body), model
@@ -167,71 +189,6 @@ def _message_of(d: dict) -> dict:
     return msg
 
 
-def _messages(system: str, contents: list[dict]) -> list[dict]:
-    """llm.py가 만든 대화(Gemini 형식 contents)를 Chat Completions 메시지로."""
-    out = [{"role": "system", "content": system}]
-    for c in contents:
-        text = "".join(p.get("text", "") for p in c.get("parts", []))
-        out.append({"role": "assistant" if c["role"] == "model" else "user", "content": text})
-    return out
-
-
-def tool_loop(key: str, system: str, contents: list[dict], run_tool: Callable[[str, dict], dict],
-              model: str, steps: int, answer_schema: dict | None = None) -> dict:
-    """llm._tool_loop의 OpenAI판. 반환 형식 동일: {"text", "calls", "model"}
-    answer_schema가 있으면 최종 답변(도구 호출이 없는 응답)을 그 JSON 칸으로 받는다."""
-    tools = [{"type": "function", "function": {"name": d["name"], "description": d["description"],
-                                               "parameters": d["parameters"]}} for d in L.function_declarations()]
-    msgs = _messages(system, contents)
-    body = {"messages": msgs, "tools": tools, "tool_choice": "auto"}
-    if answer_schema:
-        body["response_format"] = {"type": "json_schema",
-                                   "json_schema": {"name": "answer", "schema": _strict(answer_schema), "strict": True}}
-    calls, forced, usage = [], False, L.new_usage()
-    for _ in range(steps + 1):
-        d, model = _chat_any(key, model, body)
-        L.add_usage(usage, d)
-        msg = _message_of(d)
-        tcs = msg.get("tool_calls") or []
-        if not tcs:
-            text = (msg.get("content") or "").strip()
-            if not calls and not forced and L._NUM_RE.search(text):
-                forced = True                          # 도구 없이 숫자 → 도구 호출을 강제해 다시 묻는다
-                msgs.append({"role": "assistant", "content": text})
-                msgs.append({"role": "user", "content": L.FORCE_TOOL_MSG})
-                body["tool_choice"] = "required"
-                continue
-            if not calls and L._NUM_RE.search(text):
-                text = "데이터 도구로 확인한 숫자가 없어 답할 수 없습니다. 질문을 조금 더 구체적으로 해 주세요."
-            return {"text": L.clean(text), "calls": calls, "model": model, "usage": usage}
-        body["tool_choice"] = "auto"
-        msgs.append({"role": "assistant", "content": msg.get("content"), "tool_calls": tcs})
-        for tc in tcs:
-            fn = tc.get("function") or {}
-            name = fn.get("name")
-            try:
-                params = json.loads(fn.get("arguments") or "{}")
-            except json.JSONDecodeError:
-                params = {}
-            entry = {"tool": name, "params": params}
-            if name not in L.T.TOOLS:
-                entry["error"] = f"없는 도구: {name}"
-                payload = {"error": entry["error"]}
-            else:
-                try:
-                    res = run_tool(name, params)
-                    entry["result"] = res
-                    payload = L.summarize(res)
-                except (ValueError, TypeError, KeyError) as e:
-                    entry["error"] = str(e)
-                    payload = {"error": str(e)}
-            calls.append(entry)
-            msgs.append({"role": "tool", "tool_call_id": tc.get("id"),
-                         "content": json.dumps(payload, ensure_ascii=False, default=str)})
-    return {"text": "질문이 복잡해 여러 단계 분석이 필요합니다. 아래 결과를 참고해 주세요.", "calls": calls, "model": model,
-            "usage": usage}
-
-
 def _strict(schema: dict) -> dict:
     """JSON schema strict 모드 조건: 모든 object에 additionalProperties=false, 모든 속성 required."""
     s = copy.deepcopy(schema)
@@ -250,11 +207,17 @@ def _strict(schema: dict) -> dict:
     return s
 
 
-def json_call(key: str, model: str, system: str, prompt: str, schema: dict, name: str = "draft") -> tuple[str, str, dict]:
-    """도구 없이 JSON schema 형식으로 답하게 한다. (JSON 문자열, 실제 쓴 모델, 토큰 사용량)"""
+
+def json_call(key: str, system: str, prompt: str, schema: dict, name: str = "draft", model: str | None = None
+              ) -> tuple[dict, str, dict]:
+    """JSON schema 형식으로만 답하게 한다. (파싱한 dict, 실제 쓴 모델, 토큰 사용량)"""
     body = {"messages": [{"role": "system", "content": system}, {"role": "user", "content": prompt}],
             "response_format": {"type": "json_schema", "json_schema": {"name": name, "schema": _strict(schema), "strict": True}}}
-    d, model = _chat_any(key, model, body)
-    usage = L.new_usage()
-    L.add_usage(usage, d)
-    return (_message_of(d).get("content") or "").strip(), model, usage
+    d, used = _chat_any(key, model or pick_model(key), body)
+    u = d.get("usage") or {}
+    usage = {"input": u.get("prompt_tokens") or 0, "output": u.get("completion_tokens") or 0}
+    text = (_message_of(d).get("content") or "").strip()
+    try:
+        return json.loads(text), used, usage
+    except json.JSONDecodeError as e:
+        raise LLMError("GPT 응답을 읽지 못했습니다. 다시 질문해 주세요.") from e

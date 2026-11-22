@@ -143,8 +143,6 @@ def period_controls():
     elif prev is None:
         sb.caption("⚠️ 비교할 이전 기간이 4/1 이전이라 상세 데이터가 없습니다.")
     sb.caption(f"분석: {period_label(cur)}  \n비교: {period_label(prev)}")
-    st.session_state["page_context"] = (f"{st.session_state.get('page_title', '분석')} 화면을 보고 있음. "
-                                        f"조회 기간 {period_label(cur)}, 비교 기간 {period_label(prev)}")
     return cur, prev
 
 
