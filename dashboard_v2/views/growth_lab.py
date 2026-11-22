@@ -194,23 +194,15 @@ def show_planner():
         s, e = G.base_period(today)
         pair = GP.replay(mart, category, normalized, s, e)
         be = GP.break_even(pair)
-        # Detection uses the resulting category sales change, NOT order growth:
-        # a 10% discount with 10% more orders need not increase sales.
-        expected_sales_change = (
-            (be["after"]["revenue"] / be["before"]["revenue"]) * (1 + assumed_response[1]) - 1
-            if be["before"]["revenue"] > 0 else 0.0
-        )
-        detect = G.detect_days(mart, {"type": "category", "value": category},
-                               today, effect=abs(expected_sales_change))
-        suggested_days = (detect["days"] if detect["status"] == "확인 가능"
-                          and detect["days"] is not None else 14)
+        # Duration is a simple user-editable 14-day default, not a
+        # statistical detection-period recommendation.
         with st.expander("운영 기간 변경 (선택 사항)"):
             override = st.toggle("운영 기간 직접 지정", value=False, key="gl_days_override")
             if override:
                 days = st.number_input("운영 기간(일)", min_value=7, max_value=60,
                                        value=14, step=1, key="gl_days_custom")
             else:
-                days = suggested_days
+                days = 14
         mc = GP.monte_carlo(mart, category, normalized, today, days=days,
                             low=assumed_response[0], mode=assumed_response[1],
                             high=assumed_response[2], n=20000)
@@ -220,7 +212,7 @@ def show_planner():
 
     st.subheader("2. 분석 결과")
     st.caption(f"선택한 카테고리 상품 매출 기준 · 운영 {days}일 · 20,000회 몬테카를로")
-    a, b, c = st.columns(3)
+    a, b = st.columns(2)
     baseline_sales = mc["baseline_sales_p50"]
     sales_change = (mc["sales_p50"] / baseline_sales - 1) if baseline_sales > 0 else None
     margin_change_pp = (mc["margin_p50"] - mc["baseline_margin_p50"]) * 100
@@ -232,11 +224,6 @@ def show_planner():
              delta=f"{margin_change_pp:+.1f}%p 현재 대비",
              help="같은 운영 기간의 프로모션 미시행 이익률 중앙값 대비. 배송비 부담 배분액을 반영합니다.")
     b.caption(f"예상 범위(10~90%): {ui.pct(mc['margin_p10'])} ~ {ui.pct(mc['margin_p90'])}")
-    if detect["days"] is not None:
-        c.metric("효과 확인 기간", f"{detect['days']}일", help=detect["note"])
-    else:
-        c.metric("효과 확인 기간", "산출 어려움", help=detect["note"])
-    c.caption(f"매출 변화 가정 {expected_sales_change:+.1%} · {detect['status']}")
 
     with st.container(border=True):
         if be["required"] is None:
@@ -280,7 +267,6 @@ def show_planner():
             "기본 주문 반응(삼각분포)을 적용한 조건부 결과입니다. "
             "실제 주문 증가율의 AI 예측이나 프로모션 효과의 인과 추정은 아닙니다."
         )
-        st.caption(f"효과 확인 기간: {detect['note']}")
 
     st.subheader("3. 실행 계획")
     start = st.date_input("프로모션 시작일", value=today.date(), key="gl_start")
@@ -312,7 +298,7 @@ def show_planner():
         "예상 매출 중앙값": round(mc["sales_p50"]),
         "예상 이익률 중앙값": round(mc["margin_p50"], 4),
         "이익 증가 확률": round(mc["prob"], 4),
-        "본전 주문 증가율": be["required"], "효과 확인 기간": detect["days"]
+        "본전 주문 증가율": be["required"]
     }
 
 
