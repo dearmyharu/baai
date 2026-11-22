@@ -116,6 +116,7 @@ def validate(question: str, draft: dict, today, products: pd.DataFrame, prev: Qu
 
     # 고객 조건 (근거 표현이 질문에 있고 사전 동의어여야)
     filters: dict = dict(prev.filters) if inherit else {}
+    used: list[str] = []                       # 받아들인 조건의 근거 단어 (축 찾기에서 뺀다)
     for f in draft.get("filters") or []:
         key, val, ev = f.get("key"), f.get("value"), (f.get("evidence") or "").strip()
         if not _in_question(ev, question):
@@ -135,9 +136,12 @@ def validate(question: str, draft: dict, today, products: pd.DataFrame, prev: Qu
             filters[key] = list(dict.fromkeys(list(filters.get(key, [])) + [val]))
         else:
             filters[key] = val
+        used.append(ev)
 
-    # 나머지 칸 (대상·의도 제외)
-    rest = _rest(draft, question)
+    # 나머지 칸 (대상·의도 제외). 축은 고객 조건 근거(예: '골드 등급')를 뺀 질문에서 찾는다
+    rest = _rest(draft, question, used)
+    if rest["axis"] in SAME_DIM and SAME_DIM[rest["axis"]] in filters:
+        rest["axis"] = None                     # 같은 구분으로 걸러 놓고 그 구분으로 나누지 않는다(예: 골드 등급만 → 등급별 X)
     if isinstance(rest, Decision):
         return rest
 
@@ -202,10 +206,8 @@ def validate(question: str, draft: dict, today, products: pd.DataFrame, prev: Qu
         q = make(intent, category, product)
     except ValueError as e:
         return _msg(str(e))
-    # 매출: 카테고리·상품 대상이면 상품매출 (완료 매출·객단가는 주문 전체 금액이라 나눌 수 없다)
-    if (q.category or q.product) and q.measure in ("완료 매출", "객단가"):
-        notes.append(f"{q.category or q.product} 매출은 상품매출(쿠폰 차감 후 상품 금액, 배송비 제외)로 봅니다.")
-        q = replace(q, measure="상품매출" if q.measure == "완료 매출" else None)
+    q, fix = _fit(q)
+    notes += fix
     # 데이터가 없는 기간
     if per.no_data:
         if per.alt:
@@ -215,8 +217,31 @@ def validate(question: str, draft: dict, today, products: pd.DataFrame, prev: Qu
     return Decision("query", q, why, notes=notes)
 
 
+SAME_DIM = {"grade_at_order": "grades", "gender": "gender", "age_group": "age_groups", "region": "regions",
+            "signup_channel": "signup_channels", "customer_type": "customer_type"}
+
+
+def _fit(q: Query) -> tuple[Query, list[str]]:
+    """의도·대상에 맞지 않는 지표·축을 바로잡는다 (계산 함수가 거절할 조합을 미리 막음). (질의서, 안내)"""
+    notes = []
+    split = q.intent in ("location", "rank") or q.category or q.product     # 카테고리·상품 단위로 나눠 보는 경우
+    if split and q.measure in ("완료 매출", "객단가"):
+        if q.measure == "완료 매출":
+            notes.append("카테고리·상품 단위 매출은 상품매출(쿠폰 차감 후 상품 금액, 배송비 제외)로 봅니다.")
+        q = replace(q, measure="상품매출" if q.measure == "완료 매출" else None)
+    if q.intent == "location" and q.measure not in (None, "상품매출", "판매 수량", "이익"):
+        q = replace(q, measure=None)
+    if q.axis == "category" and (q.category or q.product):
+        q = replace(q, axis=None)               # 대상이 카테고리면 '카테고리별'은 그 안의 기본 축으로
+    if q.axis == "product" and q.product:
+        q = replace(q, axis=None)
+    return q, notes
+
+
 def _intent(draft: dict, why: bool, axis: str | None = None) -> str | None:
     intent = draft.get("intent")
+    if draft.get("topic") in ("funnel", "theme") and intent in ("rank", "status", "unknown", None):
+        return "funnel_theme"                   # 구매 단계·테마 주제는 퍼널·테마에만 있다
     if why and intent in ("status", "trend", "unknown", None):
         return "location"                       # '왜'는 변화가 생긴 위치로 답한다
     if axis and axis not in ("category", "product") and intent in ("status", "trend", "rank", "unknown", None):
@@ -240,13 +265,19 @@ def _mentioned_product(question: str, names: list[str], cats: list[str]) -> str:
     return " ".join(L.norm(w).rstrip("은는이가을를의도") for w in found)
 
 
-def _rest(draft: dict, question: str) -> dict:
+def _rest(draft: dict, question: str, used: list[str] | None = None) -> dict:
     """의도·대상·조건·기간을 뺀 칸. 근거 없는 축과 상품 순위 기준은 쓰지 않는다(계산 함수 기본값)."""
     measure = draft.get("measure") if draft.get("measure") in MEASURE_UNIT else None
     av, ae = _field(draft, "axis")
     axis = av if av in AXES and _in_question(ae, question) and L.words_match(ae, L.AXIS_WORDS[av]) else None
+    q_wo = question
+    for u in used or []:
+        if u.strip():
+            q_wo = q_wo.replace(u, " ")
+    if axis is not None and not L.words_match(q_wo, L.AXIS_WORDS[axis]):
+        axis = None                             # 축 근거가 고객 조건 말 안에만 있으면(예: '골드 등급') 축이 아니다
     if axis is None and av is None:
-        axis = L.axis_in(question)              # AI가 축을 비웠어도 질문에 구분 이름이 있으면
+        axis = L.axis_in(q_wo)                  # AI가 축을 비웠어도 질문에 구분 이름이 있으면
     group_by = draft.get("group_by") if draft.get("group_by") in ("category", "product") else None
     if group_by == "product" and not L.words_match(question, L.AXIS_WORDS["product"]):
         group_by = None

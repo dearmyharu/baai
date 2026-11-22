@@ -6,9 +6,9 @@ import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from engine import ai, data as D, interpret as I, validate as V  # noqa: E402
+from engine import ai, compute as C, data as D, interpret as I, validate as V  # noqa: E402
 from engine.data import as_of, build_all  # noqa: E402
-from eval_v2 import holdout_cases, parse_cases  # noqa: E402
+from eval_v2 import final_cases, holdout_cases, parse_cases  # noqa: E402
 
 
 def grade(d: V.Decision, exp: dict) -> list[str]:
@@ -38,14 +38,14 @@ def grade(d: V.Decision, exp: dict) -> list[str]:
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--repeat", type=int, default=1)
-    ap.add_argument("--set", default="tune", choices=["tune", "holdout"])
+    ap.add_argument("--set", default="tune", choices=["tune", "holdout", "final"])
     args = ap.parse_args()
     D.set_cutoff(D.TODAY)
     m = as_of(build_all(), D.TODAY)
     prod = m["raw"]["product"][["product_name", "category"]]
     cats = sorted(prod["category"].unique())
     key = ai.api_key()
-    src = parse_cases if args.set == "tune" else holdout_cases
+    src = {"tune": parse_cases, "holdout": holdout_cases, "final": final_cases}[args.set]
     items = [(cid, None, q, e) for cid, q, e in src.CASES] + list(src.FOLLOW)
     total = passed = 0
     usage = {"input": 0, "output": 0}
@@ -62,6 +62,11 @@ def main():
                 usage = {k: usage[k] + u[k] for k in usage}
                 d = V.validate(q, draft, D.TODAY, prod, prev)
             bad = grade(d, exp)
+            if d.kind == "query":                     # 계산까지 돌린다: 계산 함수가 거절하면 실패
+                try:
+                    C.run(m, d.query, D.TODAY)
+                except ValueError as e:
+                    bad.append(f"계산 거절: {e}")
             total += 1
             passed += not bad
             mark = "O" if not bad else "X"
