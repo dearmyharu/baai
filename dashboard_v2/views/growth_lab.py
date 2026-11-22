@@ -238,8 +238,6 @@ def show_planner():
             )
             st.caption(f"기준 28일 주문 {be['orders']:,}건 · 추가 주문 "
                        f"{max(0, be['required_orders']):,}건 · 카테고리 매출 구성·원가가 유지된다는 가정")
-        st.metric("기존보다 이익이 증가할 확률", f"{mc['prob']:.1%}",
-                  help="정책 미시행과 비교한 조건부 이익 증가 확률")
     with st.expander("시뮬레이션 상세 · 근거 및 가정"):
         st.markdown(
             f"**기본 주문 반응 가정:** {assumed_response[0]:+.0%} ~ "
@@ -297,7 +295,6 @@ def show_planner():
         "주문 반응 가정": assumed_response, "운영 일수": int(days),
         "예상 매출 중앙값": round(mc["sales_p50"]),
         "예상 이익률 중앙값": round(mc["margin_p50"], 4),
-        "이익 증가 확률": round(mc["prob"], 4),
         "본전 주문 증가율": be["required"]
     }
 
