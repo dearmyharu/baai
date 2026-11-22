@@ -348,7 +348,7 @@ def location(m: dict, q: Query, today) -> Result:
     return Result("location", f"{scope.label} {measure} 변화 위치 · {AXES[axis]}별",
                   scope.tags(wname, f"비교: {bname}"),
                   {"target": scope.label, "measure": measure, "axis": AXES[axis], "direction": "down" if down else "up",
-                   "total": total, "top": top, "top_share": top_share, "window": wname},
+                   "total": total, "top": top, "top_share": top_share, "window": wname, "base_name": bname},
                   facts, tbl, chart, notes, axes_left=[a for a in _axes_for(scope.kind) if a != axis])
 
 
@@ -539,12 +539,14 @@ def promo(m: dict, q: Query, today) -> Result:
                      "이익률": f"{F.pct(p['margin_pre'], 1)} → {F.pct(p['margin_dur'], 1)}"})
         facts.append(f"{p['name']}({p['phase']}): {p['status']} · 대상 일평균 매출 {F.pct_signed(p['sales_chg'])} · "
                      f"이익률 {F.pct(p['margin_pre'], 1)} → {F.pct(p['margin_dur'], 1)}")
-    if not ps:
+    if ps:
+        facts.insert(0, f"프로모션 {F.count(len(ps))}")
+    else:
         facts = [f"{q.category + ' ' if q.category else ''}프로모션 기록이 없습니다."]
     notes = ["판정: 시작 전 14일 대비 대상 카테고리 일매출 비중 변화(95% 구간), 이익률이 8%p 넘게 떨어지면 중단 검토.",
              "10월 프로모션은 모의 데이터입니다."]
     return Result("promo", "프로모션 실적", [q.category] if q.category else [],
-                  {"promos": [(p["name"], p["phase"], p["status"]) for p in ps]},
+                  {"promos": [(p["name"], p["phase"], p["status"]) for p in ps], "count": F.count(len(ps))},
                   facts, pd.DataFrame(rows) if rows else None, None, notes)
 
 
@@ -580,7 +582,8 @@ def funnel_theme(m: dict, q: Query, today) -> Result:
                  f"넘어가는 비율이 가장 낮은 단계: {step_name}({F.pct(worst['직전 단계 대비 전환율'], 1)})"]
         chart = {"kind": "funnel", "data": cur[["단계", "세션 수"]], "x": "세션 수", "y": "단계", "unit": "count"}
         return Result("funnel_theme", f"{pname} 구매 단계", scope.tags(F.span(s, e), f"비교: {bname}"),
-                      {"topic": "funnel", "path": pname, "worst": step_name}, facts, tbl, chart, [])
+                      {"topic": "funnel", "path": pname, "worst": step_name, "sessions": cur.iloc[0]["세션 수"],
+                       "conv": cur.iloc[-1]["첫 단계 대비"], "worst_rate": worst["직전 단계 대비 전환율"]}, facts, tbl, chart, [])
     th = M.theme_table(scope.m, s, e)
     th = th[th["노출세션"] > 0]
     tbl = pd.DataFrame({"테마": th["테마"], "노출 방문": th["노출세션"].map(lambda v: F.count(v, "세션")),
@@ -594,7 +597,8 @@ def funnel_theme(m: dict, q: Query, today) -> Result:
     chart = {"kind": "scatter", "data": th[["테마", "클릭률", "구매전환율"]].rename(columns={"구매전환율": "구매 전환율"}),
              "x": "클릭률", "y": "구매 전환율", "label": "테마", "unit": "rate"}
     return Result("funnel_theme", "큐레이션 테마 반응", scope.tags(F.span(s, e)),
-                  {"topic": "theme", "best": best["테마"], "click": click["테마"]}, facts, tbl, chart, [])
+                  {"topic": "theme", "best": best["테마"], "best_rate": best["구매전환율"],
+                   "click": click["테마"], "click_rate": click["클릭률"]}, facts, tbl, chart, [])
 
 
 # ---------------------------------------------------------------------------
