@@ -21,6 +21,7 @@ import numpy as np
 import pandas as pd
 
 from . import basis as BASIS
+from .query import Query
 
 SHIP_COST = BASIS.SHIP_COST   # 판매자 배송 원가(주문당, 가정값) — 기준은 basis.py
 WEEKS = BASIS.WEEKS           # '평소' = 최근 4주 같은 요일
@@ -212,19 +213,9 @@ def _spike_profile(o_all: pd.DataFrame, it: pd.DataFrame, m: dict, product: str,
         fc = od.loc[od["is_first_purchase"].fillna(0).astype(float).eq(1), "customer_id"]
         c = fc.map(cust.set_index("customer_id")["signup_channel"]).value_counts()
         chan = c.index[0] if len(c) else None
-    if top_share >= 0.5 and n_cust <= 2:
-        guess = "대량 주문"
-    elif n_orders >= 3 and first / max(n_cust, 1) >= 0.5:
-        guess = "바이럴·외부 유입"
-    elif coupon >= 0.7:
-        guess = "쿠폰 영향"
-    elif best >= 0.6 and n_orders >= 3:
-        guess = "특정 시간대 집중(방송·게시물 여부 확인 필요)"
-    else:
-        guess = "특이 패턴 없음"
     return {"orders": n_orders, "customers": n_cust, "first": first, "coupon_share": coupon,
             "top_customer_share": top_share, "hour_from": best_h, "hour_to": best_to, "hour_share": best,
-            "channel": chan, "guess": guess}
+            "channel": chan}
 
 
 def todos(m: dict, day: pd.Timestamp, th: dict | None = None, ship_cost: float = SHIP_COST) -> list[dict]:
@@ -258,13 +249,13 @@ def todos(m: dict, day: pd.Timestamp, th: dict | None = None, ship_cost: float =
                        f"주문 {prof['orders']}건 · 구매 고객 {prof['customers']}명(첫 구매 {prof['first']}명) · "
                        f"쿠폰 사용 {prof['coupon_share']:.0%}" +
                        (f" · {prof['hour_from']}~{prof['hour_to']}시에 {prof['hour_share']:.0%}"
-                        if prof["hour_from"] is not None else ""),
-                       f"주문 패턴 추정: {prof['guess']}"]
+                        if prof["hour_from"] is not None else "")]
             out.append({"kind": "spike", "key": f"product:{p}", "tone": "opportunity", "priority": 0,
-                        "title": f"{p} 전일 주문 급증(평소 대비 {ny_[p] / max(nmean[p], 0.5):.1f}배) 원인 확인",
+                        "title": f"{p} 전일 주문 급증(평소 대비 {ny_[p] / max(nmean[p], 0.5):.1f}배)",
                         "reasons": reasons, "impact": float(s[day][p] - smean[p]), "profile": prof,
-                        "actions": [{"type": "ask", "label": "구매 고객 분석",
-                                     "q": f"{_d(day)} {p} 구매 고객의 구성(첫 구매/기존, 가입 경로, 연령대)을 분석해 주세요"}]})
+                        "actions": [{"type": "ask", "label": "구매 고객 구성 보기",
+                                     "query": Query("location", product=p, axis="customer_type",
+                                                    period=(day, day + pd.Timedelta(days=1)))}]})
             spiked.add(p)
         elif qmean[p] >= th["zero_base_qty"] and qy[p] == 0:
             out.append({"kind": "spike", "key": f"product:{p}", "tone": "problem", "priority": 0,
@@ -285,12 +276,11 @@ def todos(m: dict, day: pd.Timestamp, th: dict | None = None, ship_cost: float =
             pdiff = (_base_mean(pt, base3) - _win_sum(pt, cur3)).sort_values(ascending=False)
             top = pdiff.index[0] if len(pdiff) and pdiff.iloc[0] > 0 else None
             out.append({"kind": "drop", "key": f"category:{c}", "tone": "problem", "priority": 1,
-                        "title": f"{c} 카테고리 매출 감소 원인 확인",
+                        "title": f"{c} 카테고리 매출 감소",
                         "reasons": [f"{span3} 매출 {_won(v)} · 평소 {_won(b)} ({(v / b - 1):+.0%})"] +
                                    ([f"감소 폭 최대 상품: {top} (−{_won(pdiff.iloc[0])})"] if top else []),
                         "impact": float((b - v) / 3),
-                        "actions": [{"type": "ask", "label": "AI 분석가 원인 분석",
-                                     "q": f"최근 7일 {c} 카테고리에서 매출이 줄어든 상품은? 첫 구매·기존 고객별로도 보여 주세요"}]})
+                        "actions": [{"type": "ask", "label": "변화 위치 보기", "query": Query("location", category=c)}]})
             flagged_cat.add(c)
     q3, qb3 = _win_sum(q, cur3), _base_mean(q, base3)
     s3, sb3 = _win_sum(s, cur3), _base_mean(s, base3)
@@ -301,18 +291,18 @@ def todos(m: dict, day: pd.Timestamp, th: dict | None = None, ship_cost: float =
         if (cat_of.get(p) not in flagged_cat and sb3[p] > 0 and (sb3[p] - s3[p]) / sb3[p] >= th["drop_pct"]
                 and (sb3[p] - s3[p]) / 3 >= min_day):
             out.append({"kind": "drop", "key": f"product:{p}", "tone": "problem", "priority": 1,
-                        "title": f"{p} 판매 감소 원인 확인",
+                        "title": f"{p} 판매 감소",
                         "reasons": [f"{span3} {q3[p]:.0f}개 · 평소 {qb3[p]:.1f}개 ({(q3[p] / qb3[p] - 1):+.0%})"],
                         "impact": float((sb3[p] - s3[p]) / 3),
-                        "actions": [{"type": "ask", "label": "AI 분석가 원인 분석",
-                                     "q": f"최근 7일 {p} 판매 수량을 첫 구매·기존 고객별, 요일별로 보면?"}]})
+                        "actions": [{"type": "ask", "label": "변화 위치 보기",
+                                     "query": Query("location", product=p, axis="customer_type")}]})
         elif q3[p] >= th["rise_x"] * qb3[p] and (s3[p] - sb3[p]) / 3 >= min_day:
             out.append({"kind": "rise", "key": f"product:{p}", "tone": "opportunity", "priority": 1,
                         "title": f"{p} 판매 증가 · 노출 확대 검토",
                         "reasons": [f"{span3} {q3[p]:.0f}개 · 평소 {qb3[p]:.1f}개 ({q3[p] / qb3[p]:.1f}배)"],
                         "impact": float((s3[p] - sb3[p]) / 3),
-                        "actions": [{"type": "ask", "label": "구매 고객 분석",
-                                     "q": f"{span3} {p} 구매 고객의 구성을 분석하고 평소와 달라진 점을 알려 주세요"}]})
+                        "actions": [{"type": "ask", "label": "구매 고객 구성 보기",
+                                     "query": Query("location", product=p, axis="customer_type")}]})
 
     # ③ 남는 게 적은 인기 상품 (최근 7일)
     lo7 = day - pd.Timedelta(days=6)
@@ -368,8 +358,7 @@ def todos(m: dict, day: pd.Timestamp, th: dict | None = None, ship_cost: float =
                     "title": "취소·환불 주문 확인",
                     "reasons": [f"전일 {ny}건 ({_won(by_day['amt'].get(day, 0))}) · 최근 4주 동일 요일 최대 {bmax}건"],
                     "impact": float(by_day["amt"].get(day, 0)),
-                    "actions": [{"type": "ask", "label": "AI 분석가 조회",
-                                 "q": f"{_d(day)} 취소·환불 주문을 상태별로 조회해 주세요"}]})
+                    "actions": []})
 
     promos = promo_status(m, day, it)
     out = _promo_context(out, promos, day, it)
@@ -391,7 +380,7 @@ def _promo_context(items: list[dict], promos: list[dict], day: pd.Timestamp, it:
             continue
         if cat in recent and x["kind"] == "drop":
             p = recent[cat]
-            x = {**x, "reasons": x["reasons"] + [f"{p['name']} 종료({_d(p['end'])}) 직후입니다. 할인 기간에 앞당겨 산 영향일 수 있습니다(가설)"]}
+            x = {**x, "reasons": x["reasons"] + [f"{p['name']} 종료({_d(p['end'])}) 후 {(day - p['end']).days}일째입니다."]}
         out.append(x)
     return out
 

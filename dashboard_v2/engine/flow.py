@@ -20,7 +20,7 @@ LEVERS = [           # (정책, 값, 이름) — Growth Lab(simulation) 수단 �
     ("price", 5, "판매가 5% 할인"),
     ("price", 10, "판매가 10% 할인"),
     ("discount", 5, "주문 쿠폰 5%"),
-    ("shipping", 20000, f"무료배송 기준 {S.FREE_SHIP_THRESHOLD:,}원 → 20,000원"),
+    ("shipping", 20000, "무료배송 2만원 이상"),     # 현재 기준 3만원
 ]
 STEP_NAMES = ["원인 좁히기", "어디를 밀까", "무엇으로 밀까", "확인 가능"]
 NEXT_AXES = ["product", "customer_type", "daypart", "weekday", "path", "age_group", "gender", "region",
@@ -102,7 +102,7 @@ class Flow:
             cat = query.category
             if result.intent == "location":
                 left = [a for a in NEXT_AXES if a in result.axes_left and a not in self.seen.get(cat or "", [])]
-                out += [Action(f"{AXES[a]}로 나눠 보기", "query", replace(query, axis=a)) for a in left[:2]]
+                out += [Action(f"{AXES[a]}별로 보기", "query", replace(query, axis=a)) for a in left[:2]]
                 if not cat and result.key["axis_key"] == "category":      # 쇼핑몰 전체 → 많이 변한 카테고리로 들어가기
                     out += [Action(f"{name} 변화 위치 보기", "query", Query("location", category=name))
                             for name, _, _ in result.key["top"][:2]]

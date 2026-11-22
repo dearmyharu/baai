@@ -59,8 +59,8 @@ class Scope:
         out = [x for x in extra if x]
         if self.kind != "all":
             out.append(self.label)
-        if self.filter_label:
-            out.append(self.filter_label)
+        # 고객 조건이 없으면 '전체 고객'을 적는다: 질문의 집단(예: 직장인)을 AI가 놓쳐도 화면에서 알아볼 수 있게
+        out.append(self.filter_label or "전체 고객")
         return out
 
     def check_measure(self, measure: str) -> None:

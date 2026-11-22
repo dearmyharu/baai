@@ -2,7 +2,8 @@
 
 실행: run.bat 더블클릭, 또는 dashboard_v2 폴더에서 streamlit run app.py
 - 기준일: 2026-10-26(월) 아침으로 고정, 데이터는 10/25까지 (engine/data.py TODAY)
-- AI 분석가: 모든 화면 오른쪽 패널(engine/chat_panel.py). 답변의 분석은 왼쪽에 질문 대시보드로 띄움(engine/popup.py)
+- AI 분석가: 모든 화면 오른쪽 패널(engine/chat_panel.py). 답변의 계산 결과는 왼쪽에 질문 대시보드로 띄움(engine/popup.py)
+  처리 순서: engine/pipeline.py (AI는 질문 해석만, 계산·문장은 코드)
 """
 import sys
 from pathlib import Path
@@ -45,11 +46,10 @@ page = st.navigation({"오늘": [PAGES["home"]],
 if target := ss.pop("goto", None):
     st.switch_page(PAGES[target])
 
-# 화면을 옮기면 질문 대시보드는 닫고, 화면 맥락은 새 화면이 다시 채운다
+# 화면을 옮기면 질문 대시보드는 닫는다
 if ss.get("page_title") != page.title:
     ss.page_title = page.title
     ss.active_dash = None
-    ss.pop("page_context", None)
 
 sb = st.sidebar
 sb.markdown(f"**기준일 {D.TODAY:%Y-%m-%d}(월) 아침**  \n데이터 2026-04-01 ~ {ui.LAST_DAY:%Y-%m-%d}")
@@ -66,21 +66,13 @@ if not show_chat:
     st.stop()
 
 main, side = st.columns([7, 3], gap="medium")
-if page.title == "Growth Lab":
-    # Growth Lab은 화면 값(growth_context)을 먼저 만든 뒤 챗봇이 읽게 한다
-    with main:
-        page.run()
-    with side:
-        chat_panel.render()
-    st.stop()
-
 with side:                 # 패널을 먼저 그린다: 화면 코드가 st.stop()으로 일찍 끝나도 패널은 남는다
     chat_panel.render()
 with main:
-    spec, q = chat_panel.dash_spec()
-    if spec:
+    result, q = chat_panel.dash()
+    if result is not None:
         # 질문 대시보드를 화면 자리에 띄운다. 원래 화면은 숨겨서 계속 그린다(사이드바 입력값 유지)
-        popup.render(ui.get_mart(), spec, q, key=f"main_{ss.get('active_dash')}")
+        popup.render(result, q, chat_panel.close_dash, key=f"main_{ss.get('active_dash')}")
         st.markdown("<style>.st-key-page_hidden {display: none;}</style>", unsafe_allow_html=True)
         with st.container(key="page_hidden"):
             page.run()

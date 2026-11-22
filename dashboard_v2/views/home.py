@@ -25,12 +25,6 @@ def _brief(day_str: str):
 
 b = _brief(f"{day:%Y-%m-%d}")
 y, pace, mv = b["yesterday"], b["pace"], b["movers"]
-st.session_state["page_context"] = (
-    "아침 브리핑 화면을 보고 있음. " + b["summary"]
-    + " 프로모션 점검: " + "; ".join(f"{p['name']}({ui.md(p['start'])}~{ui.md(p['end'])}, {p['phase']}, 판정 {p['status']}, "
-                                    f"대상 일평균 매출 {p['sales_chg']:+.0%}, 이익률 {p['margin_pre']:.1%}→{p['margin_dur']:.1%})"
-                                    for p in b["promos"])
-    + " 금일 확인 사항: " + "; ".join(x["title"] for x in b["todos"]))
 LEVEL_COLOR = {BASIS.LEVEL_LOW: ui.C_DOWN, BASIS.LEVEL_HIGH: ui.C_UP}
 
 st.title(f"{today.month}월 {today.day}일 ({B.DOW[today.dayofweek]}) 아침 브리핑")
@@ -148,15 +142,9 @@ for p in b["promos"]:
 st.subheader("금일 확인 사항")
 
 
-def _seed(key: str):
-    """확인 사항의 key('category:정육', 'product:상품명')를 AI 분석가의 분석 대상으로 넘긴다."""
-    kind, _, name = key.partition(":")
-    return {"type": kind, "value": name} if kind in ("category", "product") and name else None
-
-
-def _ask(q: str, key: str = ""):
-    st.session_state.pending_question = q          # 오른쪽 AI 분석가 패널이 받아서 바로 답한다
-    st.session_state.pending_seed = _seed(key)
+def _ask(title: str, act: dict):
+    """확인 사항의 버튼: 완성된 질의서를 오른쪽 AI 분석가에 넘겨 AI 없이 바로 계산한다."""
+    st.session_state.pending = ("query", f"{title} · {act['label']}", act["query"])
     st.session_state.chat_open = True
 
 
@@ -181,8 +169,8 @@ for i, x in enumerate(b["todos"], 1):
         with right:
             for j, act in enumerate(x["actions"]):
                 if act["type"] == "ask":
-                    st.button(act["label"], key=f"todo_{i}_{j}", on_click=_ask, args=(act["q"], x["key"]),
-                              width="stretch", help=act["q"])
+                    st.button(act["label"], key=f"todo_{i}_{j}", on_click=_ask, args=(x["title"], act),
+                              width="stretch", help="오른쪽 AI 분석가에서 바로 계산합니다")
                 elif act["type"] == "lab":
                     st.button(act["label"], key=f"todo_{i}_{j}", on_click=_lab, args=(act,),
                               width="stretch")
