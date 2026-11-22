@@ -146,7 +146,16 @@ def show_planner():
         else:
             value = st.number_input("할인율 (%)", min_value=0.0, max_value=50.0,
                                     value=5.0, step=1.0, key="gl_coupon_pct")
-        st.caption("선택 카테고리 상품금액에만 적용 · 주문당 1회 · 기존 해당 카테고리 쿠폰과 중복되지 않음")
+        advanced = st.checkbox("쿠폰 추가 조건 설정 (선택 사항)", value=False, key="gl_coupon_advanced")
+        if advanced:
+            cmin, cmax = st.columns(2)
+            min_order = cmin.number_input("최소주문금액 (원)", min_value=0, max_value=100000000,
+                                          value=0, step=1000, key="gl_coupon_minimum")
+            max_discount = cmax.number_input("최대 할인액 (원)", min_value=0, max_value=100000000,
+                                              value=0, step=1000, key="gl_coupon_maximum")
+        else:
+            min_order, max_discount = 0, 0
+        st.caption("선택 카테고리 상품금액에만 적용 · 주문당 1회 · 해당 카테고리 기존 쿠폰과 중복되지 않음 · 최소주문금액/최대 할인액 0원은 제한 없음")
     elif policy == "price":
         value = st.number_input("판매가 할인율 (%)", min_value=0.0, max_value=50.0,
                                 value=5.0, step=1.0, key="gl_price_pct")
@@ -160,7 +169,9 @@ def show_planner():
             "예: 정육 15,000원 + 과일 5,000원은 정육 20,000원 기준을 충족하지 않습니다."
         )
 
-    lever = {"policy": policy, "value": value, "discount_type": coupon_type}
+    lever = {"policy": policy, "value": value, "discount_type": coupon_type,
+             "minimum_order_amount": min_order if policy == "discount" else 0,
+             "maximum_discount_amount": max_discount if policy == "discount" else 0}
     try:
         normalized = GP.normalize_lever(lever)
     except ValueError as ex:
@@ -208,11 +219,16 @@ def show_planner():
     st.subheader("2. 분석 결과")
     st.caption(f"선택한 카테고리 상품 매출 기준 · 운영 {days}일 · 20,000회 몬테카를로")
     a, b, c = st.columns(3)
+    baseline_sales = mc["baseline_sales_p50"]
+    sales_change = (mc["sales_p50"] / baseline_sales - 1) if baseline_sales > 0 else None
+    margin_change_pp = (mc["margin_p50"] - mc["baseline_margin_p50"]) * 100
     a.metric("예상 매출", ui.won(mc["sales_p50"]),
-             help="운영 기간 내 선택 카테고리 상품매출의 조건부 중앙값입니다. 다른 카테고리 매출은 제외합니다.")
+             delta=f"{sales_change:+.1%} 현재 대비" if sales_change is not None else None,
+             help="같은 운영 기간의 프로모션 미시행 매출 중앙값 대비. 선택 카테고리 상품매출 기준입니다.")
     a.caption(f"예상 범위(10~90%): {ui.won(mc['sales_p10'])} ~ {ui.won(mc['sales_p90'])}")
     b.metric("예상 이익률", ui.pct(mc["margin_p50"]),
-             help="선택 카테고리 상품원가와 주문별 배송 부담 배분액을 반영한 이익률 중앙값")
+             delta=f"{margin_change_pp:+.1f}%p 현재 대비",
+             help="같은 운영 기간의 프로모션 미시행 이익률 중앙값 대비. 배송비 부담 배분액을 반영합니다.")
     b.caption(f"예상 범위(10~90%): {ui.pct(mc['margin_p10'])} ~ {ui.pct(mc['margin_p90'])}")
     if detect["days"] is not None:
         c.metric("효과 확인 기간", f"{detect['days']}일", help=detect["note"])
@@ -226,7 +242,11 @@ def show_planner():
             st.caption("정책 적용 후 주문당 이익이 0 이하이므로 주문 수를 늘려도 본전 회복이 어렵습니다.")
         else:
             req = max(be["required"], 0.0)
-            st.markdown(f"#### 기존 이익을 유지하려면 주문 **+{req:.1%}** 필요")
+            st.markdown(
+                f"#### 현재 이익을 유지하려면 주문이 "
+                f"<span style='color:#15803D;font-weight:750'>{req:.1%}</span> 이상 늘어야 합니다",
+                unsafe_allow_html=True
+            )
             st.caption(f"기준 28일 주문 {be['orders']:,}건 · 추가 주문 "
                        f"{max(0, be['required_orders']):,}건 · 카테고리 매출 구성·원가가 유지된다는 가정")
         st.metric("기존보다 이익이 증가할 확률", f"{mc['prob']:.1%}",
