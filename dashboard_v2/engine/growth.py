@@ -190,6 +190,8 @@ def plan_row(promos: pd.DataFrame, target: dict, lever: dict, start: date, end: 
     return {"promotion_id": next_promotion_id(promos), "promotion_name": f"{cat} {lever_text(lv)}",
             "category": cat, "lever": lv["policy"], "discount_pct": pct,
             "discount_type": lv["discount_type"], "discount_value": v,
+            "minimum_order_amount": lv["minimum_order_amount"],
+            "maximum_discount_amount": lv["maximum_discount_amount"],
             "shipping_threshold": v if lv["policy"] == "shipping" else None,
             "order_response_low_pct": response[0] * 100,
             "order_response_mode_pct": response[1] * 100,
