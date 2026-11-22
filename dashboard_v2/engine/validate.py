@@ -101,8 +101,7 @@ def validate(question: str, draft: dict, today, products: pd.DataFrame, prev: Qu
                 if str(u).strip() and not PR.parse(str(u), today).text and not L.known_term(str(u), cats)
                 and not L.generic_only(str(u))]
     if unmapped:
-        return _msg(f"'{', '.join(unmapped)}'은(는) 이 데이터에 없는 항목이라 답할 수 없습니다. "
-                    f"(데이터에 있는 항목: {L.HAVE_IN_DATA})")
+        return _msg(L.rephrase(", ".join(unmapped)))
     # 이어받기는 질문이 이어지는 형태일 때만 (AI의 inherit만으로는 이어받지 않는다)
     inherit = bool(draft.get("inherit")) and prev is not None and bool(L.FOLLOW_RE.search(question))
     notes: list[str] = []
@@ -129,10 +128,9 @@ def validate(question: str, draft: dict, today, products: pd.DataFrame, prev: Qu
         if (key not in L.FILTER_WORDS or val not in words) and any(L.words_match(ev, ws) for ws in L.AXIS_WORDS.values()):
             continue                            # '연령대'처럼 구분 이름을 조건 값으로 적은 경우: 나눠 보기(축)로 처리된다
         if key not in L.FILTER_WORDS or val not in words:
-            return _msg(f"'{ev}' 조건은 이 데이터로 나눌 수 없습니다. (데이터에 있는 항목: {L.HAVE_IN_DATA})")
+            return _msg(L.rephrase(ev))
         if not L.words_match(ev, words[val]):   # 질문 속 말을 다른 항목으로 바꿔 넣은 경우(예: 단톡방 → 카카오)
-            return _msg(f"'{ev}'은(는) 이 데이터에 없는 구분이라 다른 조건으로 바꿔 계산하지 않았습니다. "
-                        f"(데이터에 있는 항목: {L.HAVE_IN_DATA})")
+            return _msg(L.rephrase(ev))
         if key in ("age_groups", "regions", "signup_channels", "grades"):
             filters[key] = list(dict.fromkeys(list(filters.get(key, [])) + [val]))
         else:

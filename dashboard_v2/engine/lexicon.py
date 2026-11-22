@@ -84,6 +84,15 @@ NOT_IN_DATA = {
 for _k, (_p, _alt) in list(NOT_IN_DATA.items()):
     NOT_IN_DATA[_k] = (re.compile(_p, re.I), _alt)
 
+REPHRASE_EXAMPLES = "예: '30대 여성이 많이 사는 카테고리는?', '서울 고객 정육 매출은?', '첫 구매 고객 매출은?'"
+
+
+def rephrase(word: str) -> str:
+    """데이터에 없는 집단·조건을 물었을 때: 추측해서 바꾸지 않고 다시 묻게 한다."""
+    return (f"'{word}'은(는) 이 데이터에 없는 구분이라, 비슷한 조건으로 바꿔 계산하지 않았습니다. "
+            f"데이터에 있는 조건으로 다시 질문해 주십시오. 있는 조건: {HAVE_IN_DATA}. {REPHRASE_EXAMPLES}")
+
+
 HAVE_IN_DATA = "성별·연령대·지역·회원가입 수단·회원 등급·첫 구매/기존 고객·신규 가입, 카테고리·상품, 쇼핑몰 안 경로(큐레이션/일반 탐색), 요일·시간대"
 
 # 일반어: 상품 이름을 찾을 때 근거에서 뺀다

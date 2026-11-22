@@ -65,6 +65,10 @@ check("샐러드·건강식(3일만 하락)은 후보 아님", "샐러드·건�
 check("정육 후보에 할인 종료 사실 표시", "종료 후" in r.table.set_index("카테고리").loc["정육", "최근 프로모션"].iloc[0]
       if isinstance(r.table.set_index("카테고리").loc["정육", "최근 프로모션"], pd.Series)
       else "종료 후" in r.table.set_index("카테고리").loc["정육", "최근 프로모션"])
+r = C.run(m, Query("rank", measure="구매 고객 수"), T)
+check("구매 고객 수 순위에는 비중 없음(합이 전체가 아님)", "비중" not in r.table.columns)
+r = C.run(m, Query("rank"), T)
+check("상품매출 순위에는 비중 있음", "비중" in r.table.columns)
 # 6. 기간 비교 규칙
 check("9월은 8월 전체와 비교", S.baseline("2026-09-01", "2026-10-01")[1] == "지난달")
 check("진행 중인 10월은 9월 같은 날짜와 비교", S.baseline("2026-10-01", "2026-10-26")[1] == "지난달 같은 날짜")

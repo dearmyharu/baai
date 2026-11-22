@@ -206,7 +206,8 @@ def rank(m: dict, q: Query, today) -> Result:
         c = S._compare(S.daily(scope.o, scope.it, measure, by=col), cur, base)
         df = pd.DataFrame({"값": c["현재"], "평소": c["평소"], "변화율": c["변화율"]})
         df = df[df["값"] > 0]
-        share = df["값"] / df["값"].sum() if df["값"].sum() else None
+        # 비중은 더해서 전체가 되는 값만 (주문 수·구매 고객 수는 한 주문·고객이 여러 그룹에 걸쳐 합이 전체가 아니다)
+        share = df["값"] / df["값"].sum() if df["값"].sum() and measure in ("상품매출", "판매 수량", "이익") else None
         if share is not None:
             df["비중"] = share
     df = df.sort_values("값", ascending=False)
