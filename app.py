@@ -21,8 +21,11 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 pages = {
+    "오늘": [
+        st.Page("views/home.py", title="일일 브리핑", icon=":material/today:", default=True),
+    ],
     "분석": [
-        st.Page("views/overview.py", title="통합 현황", icon=":material/dashboard:", default=True),
+        st.Page("views/overview.py", title="통합 현황", icon=":material/dashboard:"),
         st.Page("views/curation.py", title="상품·큐레이션", icon=":material/storefront:"),
         st.Page("views/journey.py", title="고객 여정·전환", icon=":material/conversion_path:"),
         st.Page("views/retention.py", title="고객·리텐션", icon=":material/group:"),
