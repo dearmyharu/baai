@@ -1,6 +1,7 @@
 """Growth Lab v2: category-first promotion planning and briefing result review.
 
-The chatbot integration is intentionally excluded from this UI revision.
+AI analyst link: a type=plan lab_request prefills the planner (engine/lab_link.py),
+and growth_context is read by the chat panel to summarise this page.
 Historical metrics are based on the app's frozen as-of date (2026-10-26).
 """
 from datetime import timedelta
@@ -13,6 +14,7 @@ from engine import briefing as B
 from engine import data as D
 from engine import growth as G
 from engine import growth_policy as GP
+from engine import lab_link as LL
 from engine import ui
 
 
@@ -33,7 +35,21 @@ incoming = request.get("promotion_id") if request.get("type") == "lab" else None
 if incoming and ss.get("gl_incoming_id") != incoming:
     ss["gl_incoming_id"] = incoming
     ss["gl_screen"] = "등록된 프로모션"
+# Prefill the planner once when coming from the AI analyst (type=plan).
+if request.get("type") == "plan" and ss.get("gl_plan_applied") != request:
+    ss["gl_plan_applied"] = request
+    cats_all = sorted(mart["raw"]["product"]["category"].dropna().astype(str).unique().tolist())
+    state, notes = LL.planner_state(request, cats_all)
+    ss.update(state)
+    ss.pop("gl_analysis_params", None)
+    ss["gl_handoff_note"] = (LL.request_text(state), notes)
+# Context for the chat panel is rebuilt on every run; stale values must not survive.
+ss.pop("growth_context", None)
 ss.setdefault("gl_screen", "새 프로모션 분석")
+ss.setdefault("gl_coupon_mode", "할인율 (%)")
+ss.setdefault("gl_coupon_pct", 5.0)
+ss.setdefault("gl_price_pct", 5.0)
+ss.setdefault("gl_ship_threshold", 20000)
 screen = st.segmented_control(
     "보기", ["새 프로모션 분석", "등록된 프로모션"], key="gl_screen",
     label_visibility="collapsed"
@@ -123,6 +139,11 @@ def show_registered():
 
 
 def show_planner():
+    if note := ss.get("gl_handoff_note"):
+        text, extra = note
+        st.info("AI 분석가에서 넘겨받은 조건을 입력칸에 채웠습니다"
+                + (f": {text}" if text else "") + ". 값을 확인한 뒤 '프로모션 분석하기'를 선택하십시오."
+                + ("".join(" " + n for n in extra)))
     st.subheader("1. 프로모션 설정")
     cats = sorted(mart["raw"]["product"]["category"].dropna().astype(str).unique().tolist())
     if not cats:
@@ -138,7 +159,7 @@ def show_planner():
     coupon_type = "rate"
     if policy == "discount":
         coupon_type_label = st.segmented_control(
-            "할인 방식", ["할인율 (%)", "할인액 (원)"], default="할인율 (%)",
+            "할인 방식", ["할인율 (%)", "할인액 (원)"],
             key="gl_coupon_mode"
         )
         coupon_type = "fixed" if coupon_type_label == "할인액 (원)" else "rate"
@@ -147,7 +168,7 @@ def show_planner():
                                     value=2000, step=500, key="gl_coupon_fixed")
         else:
             value = st.number_input("할인율 (%)", min_value=0.0, max_value=50.0,
-                                    value=5.0, step=1.0, key="gl_coupon_pct")
+                                    step=1.0, key="gl_coupon_pct")
         advanced = st.checkbox("쿠폰 추가 조건 설정 (선택 사항)", value=False, key="gl_coupon_advanced")
         if advanced:
             cmin, cmax = st.columns(2)
@@ -160,11 +181,11 @@ def show_planner():
         st.caption("선택 카테고리 상품금액에만 적용 · 주문당 1회 · 해당 카테고리 기존 쿠폰과 중복되지 않음 · 최소주문금액/최대 할인액 0원은 제한 없음")
     elif policy == "price":
         value = st.number_input("판매가 할인율 (%)", min_value=0.0, max_value=50.0,
-                                value=5.0, step=1.0, key="gl_price_pct")
+                                step=1.0, key="gl_price_pct")
         st.caption("선택 카테고리 상품에 적용 · 기존 해당 카테고리 쿠폰 할인과 중복되지 않음")
     else:
         value = st.number_input("변경 후 무료배송 기준금액 (원)", min_value=0, max_value=30000,
-                                value=20000, step=1000, key="gl_ship_threshold")
+                                step=1000, key="gl_ship_threshold")
         st.caption(
             "기존 기준 30,000원 → 입력 금액으로 변경. "
             "선택 카테고리 상품금액만 기준을 충족해야 무료배송입니다. "

@@ -2,6 +2,7 @@
 
 처리: pipeline.ask(질문) → 답변 카드 / 안내 / 되묻기. 버튼(되묻기 선택지·다음 축·대상·수단)은 완성된 질의서를 들고 있어
 AI 없이 바로 계산한다. 흐름 상태(대상·본 축·수단)는 flow.Flow, 넘김 요청은 Flow.lab_request.
+Growth Lab 화면에서는 '이 화면 요약' 버튼으로 growth_context를 카드 한 장으로 보여 준다(lab_link.context_card, AI 없음).
 
 화면 규칙(2026-11-22): 카드 = 조건 태그 + 결론 한 줄 + 숫자 최대 3개 + 주의 한 줄. 표·차트는 왼쪽 질문 대시보드.
 다음 행동은 버튼, 맨 위 진행 표시줄, 최근 답 2개만 펼치고 이전 답은 결론 한 줄.
@@ -15,6 +16,7 @@ import streamlit as st
 
 from . import data as D
 from . import flow as FL
+from . import lab_link as LL
 from . import pipeline as PL
 from . import ui
 from .popup import tags_html
@@ -23,6 +25,7 @@ from .validate import Choice
 ss = st.session_state
 # 새 답이 오면 대화 칸을 아래로 (Streamlit 버전에 그 기능이 있을 때만)
 SCROLL = {"autoscroll": True} if "autoscroll" in inspect.signature(st.container).parameters else {}
+LAB_TITLE = "Growth Lab"  # app.py PAGES["lab"] 제목 (ss.page_title로 현재 화면 판별)
 OPEN_ANSWERS = 2          # 펼쳐 보이는 최근 답 수
 STARTERS = ["매출이 가장 많이 떨어진 카테고리는?", "어떤 카테고리를 밀어야 해?", "정육 매출 왜 떨어졌어?"]
 TONE_COLOR = {"down": ui.C_DOWN, "up": ui.C_UP, "flat": ui.C_MUTED}
@@ -123,6 +126,13 @@ def _handoff(req: dict):
     ss.goto = "lab"
 
 
+def _lab_summary():
+    """Growth Lab 화면 요약 카드 (클릭 시점의 growth_context = 사용자가 보고 있는 화면)."""
+    ss.chat_log.append({"role": "user", "text": "지금 Growth Lab 화면 요약"})
+    ss.chat_log.append({"role": "lab", "card": LL.context_card(ss.get("growth_context"))})
+    ss.active_dash = None
+
+
 def _show_dash(i: int):
     ss.active_dash = i
 
@@ -164,16 +174,7 @@ def _card(out: PL.Outcome, i: int, last: bool):
             for j, ch in enumerate(out.choices):
                 st.button(ch.label, key=f"ch_{i}_{j}", on_click=_choose, args=(ch, out.question), width="stretch")
         return
-    nums = "".join(
-        f"<div class='ap-num'><span>{_e(n.label)}</span><span class='v' style='color:{TONE_COLOR[n.tone]}'>"
-        f"{TONE_MARK[n.tone]} {_e(n.value)}</span></div>"
-        + (f"<div class='ap-note' style='margin:-.15rem 0 .1rem;text-align:right'>{_e(n.delta)}</div>" if n.delta else "")
-        for n in c.numbers)
-    st.markdown(
-        "<div class='ap-card'>" + tags_html(c.tags)
-        + (f"<div class='ap-lead'>{_e(c.lead)}</div>" if c.lead else "")
-        + f"<div class='ap-concl'>{_e(c.conclusion)}</div>{nums}"
-        + (f"<div class='ap-note'>참고: {_e(c.note)}</div>" if c.note else "") + "</div>", unsafe_allow_html=True)
+    st.markdown(_card_html(c), unsafe_allow_html=True)
     if c.has_dashboard and ss.get("active_dash") != i:
         st.button("대시보드 다시 보기", key=f"dash_{i}", icon=":material/dashboard:", on_click=_show_dash, args=(i,))
     if last:
@@ -184,6 +185,18 @@ def _card(out: PL.Outcome, i: int, last: bool):
             elif a.kind == "set_target":
                 st.button(a.label, key=f"act_{i}_{j}", on_click=_set_target, args=(a.value,), width="stretch",
                           icon=":material/flag:")
+
+
+def _card_html(c) -> str:
+    nums = "".join(
+        f"<div class='ap-num'><span>{_e(n.label)}</span><span class='v' style='color:{TONE_COLOR[n.tone]}'>"
+        f"{TONE_MARK[n.tone]} {_e(n.value)}</span></div>"
+        + (f"<div class='ap-note' style='margin:-.15rem 0 .1rem;text-align:right'>{_e(n.delta)}</div>" if n.delta else "")
+        for n in c.numbers)
+    return ("<div class='ap-card'>" + tags_html(c.tags)
+            + (f"<div class='ap-lead'>{_e(c.lead)}</div>" if c.lead else "")
+            + f"<div class='ap-concl'>{_e(c.conclusion)}</div>{nums}"
+            + (f"<div class='ap-note'>참고: {_e(c.note)}</div>" if c.note else "") + "</div>")
 
 
 def _levers():
@@ -210,6 +223,9 @@ def render():
             st.caption(f"기준: {D.TODAY:%Y-%m-%d} 아침, 데이터는 어제까지. AI는 질문을 해석만 하고, "
                        "숫자와 문장은 계산 함수가 만듭니다. 이유는 추정하지 않습니다.")
         _steps(m)
+        if ss.get("page_title") == LAB_TITLE:
+            st.button("지금 Growth Lab 화면 요약", key="lab_summary", on_click=_lab_summary, width="stretch",
+                      icon=":material/science:")
         with st.container(height=560, border=False, key="chat_msgs", **SCROLL):
             if not log:
                 st.caption("데이터에서 찾을 것을 물어보십시오. 예: 어디서 줄었나, 무엇이 잘 팔리나. "
@@ -224,6 +240,8 @@ def render():
                     st.markdown(f"<div class='ap-user'><span>{_e(e['text'])}</span></div>", unsafe_allow_html=True)
                 elif e["role"] == "note":
                     st.caption(f"✓ {e['text']}")
+                elif e["role"] == "lab":
+                    st.markdown(_card_html(e["card"]), unsafe_allow_html=True)
                 elif i < open_from:              # 이전 답은 결론 한 줄
                     st.markdown(f"<div class='ap-old'>{_e(e['out'].card.conclusion)}</div>", unsafe_allow_html=True)
                     if e["out"].result is not None and ss.get("active_dash") != i:
